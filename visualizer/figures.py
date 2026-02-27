@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 import plotly.graph_objects as go
@@ -48,6 +48,52 @@ def _segment_states(times: np.ndarray, path: np.ndarray, states: np.ndarray):
         }
     )
     return segments
+
+
+def _coerce_float(value) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_contour_points(raw_points) -> List[Sequence[float]]:
+    if not raw_points:
+        return []
+
+    points: List[Sequence[float]] = []
+
+    # Case 1: flattened list [x0, y0, x1, y1, ...]
+    if isinstance(raw_points, list) and raw_points and isinstance(raw_points[0], (int, float, str)):
+        flat = []
+        for item in raw_points:
+            value = _coerce_float(item)
+            if value is None:
+                flat = []
+                break
+            flat.append(value)
+        if flat and len(flat) % 2 == 0:
+            for idx in range(0, len(flat), 2):
+                points.append((flat[idx], flat[idx + 1]))
+            return points
+
+    # Case 2: list of [x, y]
+    if isinstance(raw_points, list):
+        for entry in raw_points:
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                x = _coerce_float(entry[0])
+                y = _coerce_float(entry[1])
+                if x is not None and y is not None:
+                    points.append((x, y))
+            elif isinstance(entry, dict):
+                x = _coerce_float(entry.get("X") or entry.get("x"))
+                y = _coerce_float(entry.get("Y") or entry.get("y"))
+                if x is not None and y is not None:
+                    points.append((x, y))
+
+    return points
 
 
 def build_timeline(session: SessionData, labels: List[Dict[str, Any]]):
@@ -264,7 +310,7 @@ def build_spectrogram(audio, current_time: Optional[float] = None):
     return fig
 
 
-def build_ir(reader, timestamp: float, title: str, metadata: Optional[Dict[str, Any]] = None):
+def build_ir(reader, timestamp: float, title: str, metadata: Optional[Dict[str, Any]] = None, draw_contour: bool = True, draw_peak: bool = True):
     fig = go.Figure()
     if reader is None:
         fig.update_layout(title=f"{title} (not available)")
@@ -281,32 +327,51 @@ def build_ir(reader, timestamp: float, title: str, metadata: Optional[Dict[str, 
                 colorbar=dict(title="Temp"),
             )
         )
-        if metadata and metadata.get("ContourPoints"):
-            try:
-                pts = np.array(metadata["ContourPoints"], dtype=float).reshape(-1, 2)
+        
+        # DEBUG: Log metadata info
+        if metadata:
+            print(f"[{title}] Metadata available. Keys: {metadata.keys()}")
+            print(f"[{title}] draw_contour={draw_contour}, draw_peak={draw_peak}")
+            raw_contour = metadata.get("ContourPoints")
+            print(f"[{title}] Raw ContourPoints type: {type(raw_contour)}, value: {raw_contour}")
+        
+        if metadata and draw_contour:
+            contour_points = _parse_contour_points(metadata.get("ContourPoints"))
+            print(f"[{title}] Parsed contour_points: {len(contour_points) if contour_points else 0} points")
+            if contour_points:
+                print(f"[{title}] First few points: {contour_points[:3]}")
+                # Close the contour by adding the first point at the end
+                closed_points = list(contour_points) + [contour_points[0]]
+                xs, ys = zip(*closed_points)
+                print(f"[{title}] Adding contour trace with {len(xs)} points")
                 fig.add_trace(
                     go.Scatter(
-                        x=pts[:, 0],
-                        y=pts[:, 1],
+                        x=xs,
+                        y=ys,
                         mode="lines",
                         line=dict(color="#00ffff"),
                         name="Contour",
                         showlegend=False,
                     )
                 )
-            except ValueError:
-                pass
-        if metadata and metadata.get("PeakX") is not None:
-            fig.add_trace(
-                go.Scatter(
-                    x=[float(metadata.get("PeakX", 0))],
-                    y=[float(metadata.get("PeakY", 0))],
-                    mode="markers",
-                    marker=dict(color="white", size=8, symbol="x"),
-                    name="Peak",
-                    showlegend=False,
+            else:
+                print(f"[{title}] No contour points after parsing")
+        
+        if metadata and draw_peak:
+            peak_x = _coerce_float(metadata.get("PeakX"))
+            peak_y = _coerce_float(metadata.get("PeakY"))
+            print(f"[{title}] Peak: x={peak_x}, y={peak_y}")
+            if peak_x is not None and peak_y is not None:
+                fig.add_trace(
+                    go.Scatter(
+                        x=[peak_x],
+                        y=[peak_y],
+                        mode="markers",
+                        marker=dict(color="white", size=8, symbol="x"),
+                        name="Peak",
+                        showlegend=False,
+                    )
                 )
-            )
     width = reader.width or 100
     height = reader.height or 100
     aspect = height / width if width else 1

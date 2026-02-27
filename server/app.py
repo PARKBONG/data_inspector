@@ -105,10 +105,25 @@ def build_layout(session_ids: List[str], default_session_id: str, default_sessio
             ),
             html.Div(
                 [
+                    html.H3("IR High (with Contour & Peak)"),
                     dcc.Graph(id="ir-high-graph", className="ir-graph", style={"flex": "2"}),
                     dcc.Graph(id="ir-high-peak", style={"flex": "1", "height": "220px"}),
                 ],
                 style={"display": "flex", "gap": "1rem", "alignItems": "stretch"},
+            ),
+            html.Div(
+                [
+                    html.H3("Test: IR High Only (No Contour/Peak)"),
+                    dcc.Graph(id="ir-high-test-only", className="ir-graph"),
+                ],
+                style={"border": "2px solid red", "padding": "1rem"},
+            ),
+            html.Div(
+                [
+                    html.H3("Test: Contour Only"),
+                    dcc.Graph(id="ir-high-contour-only", className="ir-graph"),
+                ],
+                style={"border": "2px solid blue", "padding": "1rem"},
             ),
             html.Div(
                 [
@@ -295,6 +310,8 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
         Output("ir-high-graph", "figure"),
         Output("ir-low-graph", "figure"),
         Output("ir-high-peak", "figure"),
+        Output("ir-high-test-only", "figure"),
+        Output("ir-high-contour-only", "figure"),
         Input("time-slider", "value"),
         Input("session-selector", "value"),
     )
@@ -303,10 +320,17 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
         session = get_session(session_id)
         rgb_src = media.rgb_image_source(session.rgb_sequence, current_time)
         metadata = session.get_ir_high_metadata(current_time)
-        ir_high = figures.build_ir(session.ir_high.raw_reader, current_time, "IR High", metadata=metadata)
+        ir_high = figures.build_ir(session.ir_high.raw_reader, current_time, "IR High (with Contour & Peak)", metadata=metadata, draw_contour=True, draw_peak=True)
         ir_low = figures.build_ir(session.ir_low.raw_reader, current_time, "IR Low")
         peak_fig = figures.build_peak_y_plot(session.ir_high.json_series, current_time)
-        return rgb_src, ir_high, ir_low, peak_fig
+        
+        # Test: IR High only (no contour/peak)
+        ir_high_test_only = figures.build_ir(session.ir_high.raw_reader, current_time, "IR High Only", metadata=metadata, draw_contour=False, draw_peak=False)
+        
+        # Test: Contour only (with peak)
+        ir_high_contour_only = figures.build_ir(session.ir_high.raw_reader, current_time, "IR High + Contour Only", metadata=metadata, draw_contour=True, draw_peak=False)
+        
+        return rgb_src, ir_high, ir_low, peak_fig, ir_high_test_only, ir_high_contour_only
 
     # Synchronize time controls (slider and label range)
     @app.callback(
