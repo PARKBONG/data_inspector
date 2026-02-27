@@ -318,60 +318,56 @@ def build_ir(reader, timestamp: float, title: str, metadata: Optional[Dict[str, 
     frame = reader.frame_values(timestamp)
     if frame is not None:
         vmin, vmax = reader.temp_range
+        # Plotly heatmaps are drawn from bottom-left by default.
+        # Our data is likely (H, W) starting from top-left.
+        # We use origin='lower' in imshow or flip the data if using go.Heatmap.
         fig.add_trace(
             go.Heatmap(
                 z=frame,
-                colorscale="Inferno",
+                colorscale="Jet",
                 zmin=vmin,
                 zmax=vmax,
-                colorbar=dict(title="Temp"),
+                showscale=False,
+                hoverinfo="z+x+y",
+                name="IR Heatmap",
             )
         )
         
-        # DEBUG: Log metadata info
-        if metadata:
-            print(f"[{title}] Metadata available. Keys: {metadata.keys()}")
-            print(f"[{title}] draw_contour={draw_contour}, draw_peak={draw_peak}")
-            raw_contour = metadata.get("ContourPoints")
-            print(f"[{title}] Raw ContourPoints type: {type(raw_contour)}, value: {raw_contour}")
-        
         if metadata and draw_contour:
             contour_points = _parse_contour_points(metadata.get("ContourPoints"))
-            print(f"[{title}] Parsed contour_points: {len(contour_points) if contour_points else 0} points")
             if contour_points:
-                print(f"[{title}] First few points: {contour_points[:3]}")
                 # Close the contour by adding the first point at the end
                 closed_points = list(contour_points) + [contour_points[0]]
                 xs, ys = zip(*closed_points)
-                print(f"[{title}] Adding contour trace with {len(xs)} points")
                 fig.add_trace(
                     go.Scatter(
                         x=xs,
                         y=ys,
                         mode="lines",
-                        line=dict(color="#00ffff"),
+                        line=dict(color="#00ffff", width=2),
                         name="Contour",
                         showlegend=False,
                     )
                 )
-            else:
-                print(f"[{title}] No contour points after parsing")
         
         if metadata and draw_peak:
             peak_x = _coerce_float(metadata.get("PeakX"))
             peak_y = _coerce_float(metadata.get("PeakY"))
-            print(f"[{title}] Peak: x={peak_x}, y={peak_y}")
+            area = _coerce_float(metadata.get("Area"))
+            # Only draw peak if it's not (0,0) or if area > 0
+            # (0,0) is often a dummy value when no signal is found.
             if peak_x is not None and peak_y is not None:
-                fig.add_trace(
-                    go.Scatter(
-                        x=[peak_x],
-                        y=[peak_y],
-                        mode="markers",
-                        marker=dict(color="white", size=8, symbol="x"),
-                        name="Peak",
-                        showlegend=False,
+                if (peak_x > 0 or peak_y > 0) and (area is None or area > 0):
+                    fig.add_trace(
+                        go.Scatter(
+                            x=[peak_x],
+                            y=[peak_y],
+                            mode="markers",
+                            marker=dict(color="white", size=10, symbol="x", line=dict(width=1, color="black")),
+                            name="Peak",
+                            showlegend=False,
+                        )
                     )
-                )
     width = reader.width or 100
     height = reader.height or 100
     aspect = height / width if width else 1
