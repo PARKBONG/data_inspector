@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List
 
+import numpy as np
 import dash
 from dash import Dash, Input, Output, State, dcc, html, no_update
 from dash.exceptions import PreventUpdate
@@ -14,23 +15,46 @@ from visualizer import figures, media
 def build_layout(session_ids: List[str], default_session_id: str, default_session: SessionData) -> html.Div:
     duration = max(0.0, default_session.duration)
     start_time = default_session.start_time
-    label_default_end = min(duration, start_time + 5)
+    label_default_end = 0.0
     session_options = [{"label": sid, "value": sid} for sid in session_ids]
     return html.Div(
         [
             html.H2("Sensor Inspector"),
             dcc.Store(id="label-store", data={}),
+            dcc.Store(id="label-setup-store", data={"mode": 1, "time1": None}),
             
             # 1. Session Control Section (Sticky)
             html.Div(
                 [
-                    html.Label("Session"),
-                    dcc.Dropdown(
-                        id="session-selector",
-                        options=session_options,
-                        value=default_session_id,
-                        clearable=False,
-                    ),
+                    html.Div([
+                        html.Div([
+                            html.Label("Session"),
+                            dcc.Dropdown(
+                                id="session-selector",
+                                options=session_options,
+                                value=default_session_id,
+                                clearable=False,
+                                style={"width": "300px"}
+                            ),
+                        ], style={"display": "inline-block", "verticalAlign": "middle"}),
+                        html.Button(
+                            "Set Time 1", 
+                            id="set-time-button", 
+                            n_clicks=0,
+                            style={
+                                "marginLeft": "2rem",
+                                "height": "38px",
+                                "verticalAlign": "bottom",
+                                "backgroundColor": "#007bff",
+                                "color": "white",
+                                "border": "none",
+                                "borderRadius": "4px",
+                                "padding": "0 1.5rem",
+                                "fontWeight": "bold",
+                                "cursor": "pointer"
+                            }
+                        ),
+                    ], style={"marginBottom": "0.5rem"}),
                     html.Label("Current time (seconds)"),
                     dcc.Slider(
                         id="time-slider",
@@ -176,10 +200,9 @@ def build_layout(session_ids: List[str], default_session_id: str, default_sessio
                                 id="label-range",
                                 min=0,
                                 max=duration,
-                                value=[start_time, label_default_end],
-                                allowCross=False,
+                                value=[0.0, 0.0],
+                                allowCross=True,
                             ),
-                            html.Button("Add label", id="add-label-button", style={"marginTop": "1rem"}),
                             html.Div(id="label-list", style={"marginTop": "1rem"}),
                         ],
                         className="label-panel",
@@ -219,7 +242,7 @@ def _initial_time_values(session: SessionData):
         marks,
         0.0,
         max_time,
-        [start, label_end],
+        [0.0, 0.0],
     )
 
 
@@ -229,9 +252,17 @@ def _extract_time_from_click(data: Dict[str, Any] | None, key: str) -> float | N
     points = data.get("points") or []
     if not points:
         return None
+    
+    # Strictly use the provided key (customdata for 3D, x for 2D)
     value = points[0].get(key)
-    if isinstance(value, list) and value:
+    
+    if value is None:
+        return None
+        
+    # Handle list wrapping (Scatter3d often wraps customdata in a list)
+    if isinstance(value, (list, np.ndarray)) and len(value) > 0:
         value = value[0]
+        
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -257,41 +288,72 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
         Output("timeline-graph", "figure"),
         Input("label-store", "data"),
         Input("session-selector", "value"),
+        Input("label-range", "value"),
     )
-    def update_timeline(label_data, session_id):
+    def update_timeline(label_data, session_id, range_value):
         session = get_session(session_id)
         labels = (label_data or {}).get(session_id, [])
-        return figures.build_timeline(session, labels)
+        return figures.build_timeline(session, labels, active_range=range_value)
 
-    # Add label per session
+    # Label setup via Set Time button
     @app.callback(
+        Output("label-setup-store", "data"),
+        Output("set-time-button", "children"),
+        Output("set-time-button", "style"),
         Output("label-store", "data"),
-        Input("add-label-button", "n_clicks"),
+        Output("label-range", "value", allow_duplicate=True),
+        Output("anomaly-note", "value"),
+        Input("set-time-button", "n_clicks"),
+        State("time-slider", "value"),
+        State("label-setup-store", "data"),
         State("session-selector", "value"),
-        State("label-range", "value"),
         State("anomaly-type", "value"),
         State("anomaly-note", "value"),
         State("label-store", "data"),
         prevent_initial_call=True,
     )
-    def add_label(n_clicks, session_id, range_value, label_type, note, existing):
-        existing = existing or {}
-        if not range_value:
-            return existing
-        start, end = sorted(range_value)
-        session_labels = list(existing.get(session_id, []))
-        session_labels.append(
-            {
-                "id": f"{session_id}-{len(session_labels)+1}",
-                "label": label_type,
-                "start": start,
-                "end": end,
-                "note": note or "",
-            }
-        )
-        existing = dict(existing)
-        existing[session_id] = session_labels
-        return existing
+    def capture_set_time(n_clicks, t_current, setup_data, session_id, a_type, a_note, existing_labels):
+        setup_data = setup_data or {"mode": 1, "time1": None}
+        existing_labels = existing_labels or {}
+        
+        button_style = {
+            "marginLeft": "2rem",
+            "height": "38px",
+            "verticalAlign": "bottom",
+            "color": "white",
+            "border": "none",
+            "borderRadius": "4px",
+            "padding": "0 1.5rem",
+            "fontWeight": "bold",
+            "cursor": "pointer"
+        }
+
+        if setup_data["mode"] == 1:
+            # Capture first point
+            setup_data["mode"] = 2
+            setup_data["time1"] = t_current
+            button_style["backgroundColor"] = "#dc3545" # Red for "Stop/Set 2"
+            return setup_data, "Set Time 2", button_style, no_update, [t_current, t_current], no_update
+        else:
+            # Capture second point and save
+            t1 = setup_data["time1"]
+            t2 = t_current
+            
+            if session_id not in existing_labels:
+                existing_labels[session_id] = []
+            
+            existing_labels[session_id].append({
+                "start": min(t1, t2),
+                "end": max(t1, t2),
+                "label": a_type,
+                "note": a_note
+            })
+            
+            setup_data["mode"] = 1
+            setup_data["time1"] = None
+            button_style["backgroundColor"] = "#007bff" # Blue for "Set 1"
+            
+            return setup_data, "Set Time 1", button_style, existing_labels, [min(t1, t2), max(t1, t2)], ""
 
     @app.callback(
         Output("label-list", "children"),
@@ -325,8 +387,9 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
         Output("rgb-frame", "style"),
         Input("time-slider", "value"),
         Input("session-selector", "value"),
+        Input("label-range", "value"),
     )
-    def update_dashboard(current_time, session_id):
+    def update_dashboard(current_time, session_id, range_value):
         current_time = float(current_time or 0.0)
         session = get_session(session_id)
         
@@ -341,11 +404,11 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
             current_time,
             f"XYZ Path (t={current_time:.2f}s)",
         )
-        fig_joints = figures.build_robot_joint_velocity_plot(session.robot, current_time)
+        fig_joints = figures.build_robot_joint_velocity_plot(session.robot, current_time, active_range=range_value)
 
         # 2. Audio Figs
-        fig_spec = figures.build_spectrogram(session.audio, current_time)
-        fig_energy = figures.build_audio_energy_plot(session.audio, current_time)
+        fig_spec = figures.build_spectrogram(session.audio, current_time, active_range=range_value)
+        fig_energy = figures.build_audio_energy_plot(session.audio, current_time, active_range=range_value)
 
         # 3. Thermal & Supervision
         ir_low_reader = session.ir_low.raw_reader
@@ -366,8 +429,8 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
         metadata = session.get_ir_high_metadata(current_time)
         ir_high = figures.build_ir(session.ir_high.raw_reader, current_time, "IR High", metadata=metadata)
         ir_low = figures.build_ir(session.ir_low.raw_reader, current_time, "IR Low", draw_contour=False, draw_peak=False)
-        peak_x_fig = figures.build_peak_x_plot(session.ir_high.json_series, current_time)
-        peak_y_fig = figures.build_peak_y_plot(session.ir_high.json_series, current_time)
+        peak_x_fig = figures.build_peak_x_plot(session.ir_high.json_series, current_time, active_range=range_value)
+        peak_y_fig = figures.build_peak_y_plot(session.ir_high.json_series, current_time, active_range=range_value)
         
         return fig_3d, fig_joints, fig_spec, fig_energy, ir_high, peak_x_fig, peak_y_fig, ir_low, rgb_src, rgb_style
 

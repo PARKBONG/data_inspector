@@ -20,6 +20,19 @@ def _normalize(values: np.ndarray) -> np.ndarray:
     return (values - vmin) / (vmax - vmin)
 
 
+def _add_active_range(fig: go.Figure, active_range: Optional[List[float]], layer="above"):
+    if active_range and len(active_range) == 2:
+        t1, t2 = sorted(active_range)
+        fig.add_vrect(
+            x0=t1,
+            x1=t2,
+            fillcolor="rgba(255, 0, 0, 0.3)",
+            layer=layer,
+            line=dict(color="red", width=1),
+            annotation_text="SETTING..." if t1 == t2 else "",
+        )
+
+
 def _segment_states(times: np.ndarray, path: np.ndarray, states: np.ndarray):
     segments: List[Dict[str, Any]] = []
     if len(path) == 0 or len(times) == 0:
@@ -96,7 +109,7 @@ def _parse_contour_points(raw_points) -> List[Sequence[float]]:
     return points
 
 
-def build_timeline(session: SessionData, labels: List[Dict[str, Any]]) -> go.Figure:
+def build_timeline(session: SessionData, labels: List[Dict[str, Any]], active_range: Optional[List[float]] = None) -> go.Figure:
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     
     # 1. Base Data (Robot ArcOn, Model LaserOn)
@@ -137,18 +150,21 @@ def build_timeline(session: SessionData, labels: List[Dict[str, Any]]) -> go.Fig
             ),
             secondary_y=True,
         )
-
+    
     # 3. User Labels
     for item in labels or []:
         fig.add_vrect(
             x0=item["start"],
             x1=item["end"],
-            fillcolor="rgba(255,0,0,0.1)",
+            fillcolor="rgba(255,0,0,0.15)",
             layer="below",
             line_width=1,
-            line_color="rgba(255,0,0,0.2)",
-            annotation_text=item.get("type", "label"),
+            line_color="rgba(255,0,0,0.3)",
+            annotation_text=item.get("label") or item.get("type") or "label",
         )
+        
+    # 3.1 Active Range (In progress)
+    _add_active_range(fig, active_range)
 
     # 4. Arc Transition Markers (Requested)
     first_arc, last_arc = session.arc_on_range
@@ -210,8 +226,9 @@ def build_combined_path_3d(
                     x=seg_path[:, 0],
                     y=seg_path[:, 1],
                     z=seg_path[:, 2],
-                    mode="lines",
+                    mode="lines+markers",
                     line=dict(color=color, dash=dash, width=3),
+                    marker=dict(size=1, opacity=0), # Invisible markers for better click detection
                     hovertemplate="Robot t=%{customdata:.3f}s",
                     customdata=seg_times,
                     name="Robot (Arc On)" if active else "Robot (Arc Off)",
@@ -240,8 +257,9 @@ def build_combined_path_3d(
                     x=seg_path[:, 0],
                     y=seg_path[:, 1],
                     z=seg_path[:, 2],
-                    mode="lines",
+                    mode="lines+markers",
                     line=dict(color=color, width=5),
+                    marker=dict(size=1, opacity=0),
                     hovertemplate="Model t=%{customdata:.3f}s",
                     customdata=seg_times,
                     name="Model (Laser On)" if active else "Model (Laser Off)",
@@ -259,9 +277,10 @@ def build_combined_path_3d(
                 y=[robot_path[idx, 1]],
                 z=[robot_path[idx, 2]],
                 mode="markers",
-                marker=dict(color="red", size=6),
+                marker=dict(color="red", size=8, symbol="diamond"),
                 name="Current (Robot)",
                 hovertemplate=f"Robot Current t={robot_times[idx]:.3f}s",
+                customdata=[robot_times[idx]],
             )
         )
 
@@ -371,7 +390,7 @@ def build_combined_path_xy(
     return fig
 
 
-def build_spectrogram(audio, current_time: Optional[float] = None):
+def build_spectrogram(audio, current_time: Optional[float] = None, active_range: Optional[List[float]] = None):
     spec = audio.spectrogram
     fig = go.Figure()
     if len(spec.times) and spec.magnitude.size:
@@ -386,6 +405,8 @@ def build_spectrogram(audio, current_time: Optional[float] = None):
         )
     if current_time is not None:
         fig.add_vline(x=current_time, line=dict(color="red", width=2))
+    
+    _add_active_range(fig, active_range)
     fig.update_layout(
         title="Audio Spectrogram",
         xaxis_title="Time (s)",
@@ -478,7 +499,7 @@ def build_ir(reader, timestamp, title, metadata=None, draw_contour=True, draw_pe
     return fig
 
 
-def build_peak_y_plot(series: JsonlSeries, current_time: float):
+def build_peak_y_plot(series: JsonlSeries, current_time: float, active_range: Optional[List[float]] = None):
     fig = go.Figure()
     times = series.times
     peaks = series.values.get("PeakY", np.array([]))
@@ -493,8 +514,10 @@ def build_peak_y_plot(series: JsonlSeries, current_time: float):
             )
         )
         fig.add_vline(x=current_time, line=dict(color="red", dash="dash"))
+    _add_active_range(fig, active_range)
     fig.update_layout(
         title="Peak Y Position",
+        clickmode="event+select",
         xaxis_title="Time (s)",
         yaxis_title="Peak Y",
         height=220,
@@ -503,7 +526,7 @@ def build_peak_y_plot(series: JsonlSeries, current_time: float):
     return fig
 
 
-def build_peak_x_plot(series: JsonlSeries, current_time: float):
+def build_peak_x_plot(series: JsonlSeries, current_time: float, active_range: Optional[List[float]] = None):
     fig = go.Figure()
     times = series.times
     peaks = series.values.get("PeakX", np.array([]))
@@ -518,8 +541,10 @@ def build_peak_x_plot(series: JsonlSeries, current_time: float):
             )
         )
         fig.add_vline(x=current_time, line=dict(color="red", dash="dash"))
+    _add_active_range(fig, active_range)
     fig.update_layout(
         title="Peak X Position",
+        clickmode="event+select",
         xaxis_title="Time (s)",
         yaxis_title="Peak X",
         height=220,
@@ -528,7 +553,7 @@ def build_peak_x_plot(series: JsonlSeries, current_time: float):
     return fig
 
 
-def build_robot_joint_velocity_plot(robot_data: RobotData, current_time: float):
+def build_robot_joint_velocity_plot(robot_data: RobotData, current_time: float, active_range: Optional[List[float]] = None):
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     times = robot_data.series.times
     
@@ -545,11 +570,12 @@ def build_robot_joint_velocity_plot(robot_data: RobotData, current_time: float):
     vel = robot_data.velocity
     if len(vel):
         fig.add_trace(
-            go.Scatter(x=times, y=vel, name="Velocity", mode="lines", line=dict(color="black", width=2)),
+            go.Scatter(x=times, y=vel, name="Velocity", mode="lines", line=dict(color="black", width=2), customdata=times),
             secondary_y=True
         )
     
     fig.add_vline(x=current_time, line=dict(color="red", dash="dash"))
+    _add_active_range(fig, active_range)
     
     fig.update_layout(
         title="Robot Joints & Velocity",
@@ -564,7 +590,7 @@ def build_robot_joint_velocity_plot(robot_data: RobotData, current_time: float):
     return fig
 
 
-def build_audio_energy_plot(audio_data: AudioData, current_time: float):
+def build_audio_energy_plot(audio_data: AudioData, current_time: float, active_range: Optional[List[float]] = None):
     fig = go.Figure()
     rms = audio_data.rms
     if len(rms.times):
@@ -577,13 +603,16 @@ def build_audio_energy_plot(audio_data: AudioData, current_time: float):
                 y=db_values,
                 mode="lines",
                 name="Energy (dB)",
-                line=dict(color="#1f77b4")
+                line=dict(color="#1f77b4"),
+                customdata=rms.times,
             )
         )
         fig.add_vline(x=current_time, line=dict(color="red", dash="dash"))
+    _add_active_range(fig, active_range)
     
     fig.update_layout(
         title="Audio Energy (Intensity)",
+        clickmode="event+select",
         xaxis_title="Time (s)",
         yaxis_title="Energy (dB)",
         height=200,

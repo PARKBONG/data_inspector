@@ -151,7 +151,7 @@ class SessionData:
         first_active, _ = self.arc_on_range
         if first_active is None:
             return 0.0
-        return max(0.0, first_active - 1.0)
+        return max(0.0, first_active)
 
     def get_ir_high_metadata(self, timestamp: float):
         series = self.ir_high.json_series
