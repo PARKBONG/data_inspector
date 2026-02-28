@@ -324,7 +324,7 @@ def build_ir(reader, timestamp: float, title: str, metadata: Optional[Dict[str, 
         fig.add_trace(
             go.Heatmap(
                 z=frame,
-                colorscale="Jet",
+                colorscale="Hot",
                 zmin=vmin,
                 zmax=vmax,
                 showscale=False,
@@ -363,7 +363,7 @@ def build_ir(reader, timestamp: float, title: str, metadata: Optional[Dict[str, 
                             x=[peak_x],
                             y=[peak_y],
                             mode="markers",
-                            marker=dict(color="white", size=10, symbol="x", line=dict(width=1, color="black")),
+                            marker=dict(color="blue", size=10, symbol="x", line=dict(width=1, color="white")),
                             name="Peak",
                             showlegend=False,
                         )
@@ -378,11 +378,18 @@ def build_ir(reader, timestamp: float, title: str, metadata: Optional[Dict[str, 
         width=420,
         height=420 * aspect,
         margin=dict(l=20, r=20, t=40, b=40),
+        plot_bgcolor="black",
+        paper_bgcolor="black",
+        font=dict(color="white"),
     )
     fig.update_yaxes(
         autorange="reversed",
         scaleanchor="x",
         scaleratio=1,
+        gridcolor="#333333",
+    )
+    fig.update_xaxes(
+        gridcolor="#333333",
     )
     return fig
 
