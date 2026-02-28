@@ -57,6 +57,7 @@ def build_layout(session_ids: List[str], default_session_id: str, default_sessio
                 ],
                 className="timeline-section",
             ),
+            # Session Control Section
             html.Div(
                 [
                     html.Label("Session"),
@@ -82,8 +83,13 @@ def build_layout(session_ids: List[str], default_session_id: str, default_sessio
                     "zIndex": 10,
                     "background": "white",
                     "padding": "0.5rem 0",
+                    "borderBottom": "1px solid #eee",
                 },
             ),
+
+            # --- Path Section ---
+            html.Hr(),
+            html.H3("Path"),
             html.Div(
                 [
                     dcc.Graph(id="robot-path-graph", className="path-graph"),
@@ -98,19 +104,30 @@ def build_layout(session_ids: List[str], default_session_id: str, default_sessio
                 ],
                 style={"display": "flex", "gap": "1rem"},
             ),
+
+            # --- Audio Section ---
+            html.Hr(),
+            html.H3("Audio"),
             html.Div(
                 [
                     dcc.Graph(id="audio-spectrogram", className="spectrogram"),
                 ]
             ),
+
+            # --- IR High Section ---
+            html.Hr(),
+            html.H3("IR High"),
             html.Div(
                 [
-                    html.H3("IR High (with Contour & Peak)"),
                     dcc.Graph(id="ir-high-graph", className="ir-graph", style={"flex": "2"}),
                     dcc.Graph(id="ir-high-peak", style={"flex": "1", "height": "220px"}),
                 ],
                 style={"display": "flex", "gap": "1rem", "alignItems": "stretch"},
             ),
+
+            # --- Supervision Section ---
+            html.Hr(),
+            html.H3("Supervision (IR Low & RGB Frame)"),
             html.Div(
                 [
                     dcc.Graph(id="ir-low-graph", className="ir-graph", style={"flex": "1"}),
