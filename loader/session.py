@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional, Sequence
 
 import numpy as np
 
@@ -33,6 +33,28 @@ class RobotData:
         if len(x) and len(y) and len(z):
             return np.column_stack([x, y, z])
         return np.empty((0, 3))
+
+    @property
+    def joints(self) -> Dict[str, np.ndarray]:
+        return {
+            f"A{i}": self.series.values.get(f"Joints.A{i}", np.array([]))
+            for i in range(1, 7)
+        }
+
+    @property
+    def velocity(self) -> np.ndarray:
+        path = self.path_xyz
+        times = self.series.times
+        if len(path) < 2 or len(times) != len(path):
+            return np.zeros(len(path))
+        
+        # Central differencing for each coordinate using np.gradient
+        # This provides v_x = dx/dt, etc.
+        vx = np.gradient(path[:, 0], times)
+        vy = np.gradient(path[:, 1], times)
+        vz = np.gradient(path[:, 2], times)
+        
+        return np.sqrt(vx**2 + vy**2 + vz**2)
 
 
 @dataclass
@@ -71,7 +93,11 @@ class SessionData:
         self.path = Path(session_path)
         self.robot = RobotData(
             JsonlLoader(self.path / "Robot" / "0.jsonl").load(
-                ["ArcOn", "Pose.X", "Pose.Y", "Pose.Z"]
+                [
+                    "ArcOn", "Pose.X", "Pose.Y", "Pose.Z",
+                    "Joints.A1", "Joints.A2", "Joints.A3",
+                    "Joints.A4", "Joints.A5", "Joints.A6"
+                ]
             )
         )
         self.model = ModelData(
@@ -108,16 +134,21 @@ class SessionData:
             candidates.append(self.ir_low.raw_reader.timestamps[-1])
         return max(candidates) if candidates else 0.0
 
-    def _compute_start_time(self) -> float:
-        if len(self.robot.series.times) == 0 or len(self.robot.arc_on) == 0:
-            return 0.0
+    @property
+    def arc_on_range(self) -> tuple[Optional[float], Optional[float]]:
         arc = self.robot.arc_on
         times = self.robot.series.times
-        first_active = None
-        for idx, value in enumerate(arc):
-            if bool(value):
-                first_active = times[idx]
-                break
+        if len(arc) == 0:
+            return None, None
+        
+        indices = np.where(arc > 0)[0]
+        if len(indices) == 0:
+            return None, None
+        
+        return times[indices[0]], times[indices[-1]]
+
+    def _compute_start_time(self) -> float:
+        first_active, _ = self.arc_on_range
         if first_active is None:
             return 0.0
         return max(0.0, first_active - 1.0)

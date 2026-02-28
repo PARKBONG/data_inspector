@@ -96,9 +96,10 @@ def _parse_contour_points(raw_points) -> List[Sequence[float]]:
     return points
 
 
-def build_timeline(session: SessionData, labels: List[Dict[str, Any]]):
+def build_timeline(session: SessionData, labels: List[Dict[str, Any]]) -> go.Figure:
     fig = make_subplots(specs=[[{"secondary_y": True}]])
-
+    
+    # 1. Base Data (Robot ArcOn, Model LaserOn)
     if len(session.robot.series.times):
         fig.add_trace(
             go.Scatter(
@@ -106,6 +107,7 @@ def build_timeline(session: SessionData, labels: List[Dict[str, Any]]):
                 y=session.robot.arc_on,
                 name="Robot ArcOn",
                 line_shape="hv",
+                line=dict(color="#1f77b4")
             ),
             secondary_y=False,
         )
@@ -117,22 +119,12 @@ def build_timeline(session: SessionData, labels: List[Dict[str, Any]]):
                 y=session.model.laser_on,
                 name="Model LaserOn",
                 line_shape="hv",
+                line=dict(color="#ff7f0e", dash="dot")
             ),
             secondary_y=False,
         )
 
-    if len(session.audio.rms.times):
-        fig.add_trace(
-            go.Scatter(
-                x=session.audio.rms.times,
-                y=_normalize(session.audio.rms.values),
-                name="Audio RMS (norm)",
-                mode="lines",
-                line={"color": "#2474f7"},
-            ),
-            secondary_y=False,
-        )
-
+    # 2. Temperature Reference
     if len(session.ir_high.json_series.times):
         fig.add_trace(
             go.Scatter(
@@ -140,48 +132,70 @@ def build_timeline(session: SessionData, labels: List[Dict[str, Any]]):
                 y=session.ir_high.json_series.values.get("MaxTemp", np.array([])),
                 name="IR High MaxTemp",
                 mode="lines",
-                line={"color": "#2ca02c"},
+                line=dict(color="#2ca02c", width=1),
+                opacity=0.6,
             ),
             secondary_y=True,
         )
 
+    # 3. User Labels
     for item in labels or []:
-        fig.add_shape(
-            type="rect",
+        fig.add_vrect(
             x0=item["start"],
             x1=item["end"],
-            y0=0,
-            y1=1,
-            xref="x",
-            yref="paper",
             fillcolor="rgba(255,0,0,0.1)",
-            line={"width": 0},
+            layer="below",
+            line_width=1,
+            line_color="rgba(255,0,0,0.2)",
+            annotation_text=item.get("type", "label"),
+        )
+
+    # 4. Arc Transition Markers (Requested)
+    first_arc, last_arc = session.arc_on_range
+    if first_arc is not None:
+        fig.add_vline(x=first_arc, line=dict(color="green", dash="dash", width=2))
+        fig.add_annotation(
+            x=first_arc, y=1.05, yref="paper", 
+            text="First Arc On", showarrow=False, 
+            font=dict(color="green", size=10), yanchor="bottom"
+        )
+    if last_arc is not None:
+        fig.add_vline(x=last_arc, line=dict(color="darkorange", dash="dash", width=2))
+        fig.add_annotation(
+            x=last_arc, y=1.05, yref="paper", 
+            text="Last Arc Off", showarrow=False, 
+            font=dict(color="darkorange", size=10), yanchor="bottom"
         )
 
     fig.update_layout(
-        height=400,
-        legend=dict(orientation="h"),
-        margin=dict(l=40, r=40, t=30, b=30),
+        title="Session Overview & Logic Status",
+        height=300,
+        margin=dict(l=40, r=40, t=60, b=40),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hovermode="x unified",
     )
-    fig.update_yaxes(title_text="Logic / Normalized")
-    fig.update_yaxes(title_text="Temperature", secondary_y=True)
-    fig.update_xaxes(
-        title_text="Time (s)",
-        range=[0, session.duration],
-    )
+    fig.update_yaxes(title_text="Logic (0/1)", secondary_y=False, range=[-0.1, 1.2])
+    fig.update_yaxes(title_text="Temperature (°C)", secondary_y=True)
+    fig.update_xaxes(title_text="Time (s)", range=[0, session.duration])
+    
     return fig
 
 
-def build_path_3d(
-    path: np.ndarray,
-    times: np.ndarray,
-    states: np.ndarray,
+def build_combined_path_3d(
+    robot_path: np.ndarray,
+    robot_times: np.ndarray,
+    robot_states: np.ndarray,
+    model_path: np.ndarray,
+    model_times: np.ndarray,
+    model_states: np.ndarray,
     timestamp: float,
     title: str,
 ):
     fig = go.Figure()
-    if len(path) and path.shape[1] >= 3 and len(times):
-        segments = _segment_states(times, path, states)
+
+    # 1. Plot Robot Path
+    if len(robot_path) and robot_path.shape[1] >= 3 and len(robot_times):
+        segments = _segment_states(robot_times, robot_path, robot_states)
         for segment in segments:
             seg_path = segment["path"]
             seg_times = segment["times"]
@@ -190,33 +204,66 @@ def build_path_3d(
             active = bool(segment["state"])
             color = "#111111" if active else "#1f77b4"
             dash = "solid" if active else "dash"
-            width = 4 if active else 2
             fig.add_trace(
                 go.Scatter3d(
                     x=seg_path[:, 0],
                     y=seg_path[:, 1],
                     z=seg_path[:, 2],
                     mode="lines",
-                    line=dict(color=color, dash=dash, width=width),
-                    hovertemplate="t=%{customdata:.3f}s",
+                    line=dict(color=color, dash=dash, width=3),
+                    hovertemplate="Robot t=%{customdata:.3f}s",
                     customdata=seg_times,
-                    name="Arc On" if active else "Arc Off",
-                    showlegend=False,
+                    name="Robot (Arc On)" if active else "Robot (Arc Off)",
+                    showlegend=True if active else False,
                 )
             )
-        idx = int(np.argmin(np.abs(times - timestamp)))
-        idx = min(idx, len(path) - 1)
+
+    # 2. Plot Adjusted Model Path
+    # Model Z is added to the Robot Z at that time
+    if len(model_path) and model_path.shape[1] >= 3 and len(model_times) and len(robot_path):
+        # Interpolate robot Z to model timestamps
+        adj_model_path = model_path.copy()
+        robot_z_at_model_times = np.interp(model_times, robot_times, robot_path[:, 2])
+        adj_model_path[:, 2] += robot_z_at_model_times
+
+        segments = _segment_states(model_times, adj_model_path, model_states)
+        for segment in segments:
+            seg_path = segment["path"]
+            seg_times = segment["times"]
+            if len(seg_path) < 2:
+                continue
+            active = bool(segment["state"])
+            color = "#ff7f0e" if active else "#aec7e8"
+            fig.add_trace(
+                go.Scatter3d(
+                    x=seg_path[:, 0],
+                    y=seg_path[:, 1],
+                    z=seg_path[:, 2],
+                    mode="lines",
+                    line=dict(color=color, width=5),
+                    hovertemplate="Model t=%{customdata:.3f}s",
+                    customdata=seg_times,
+                    name="Model (Laser On)" if active else "Model (Laser Off)",
+                    showlegend=True if active else False,
+                )
+            )
+
+    # 3. Current Position Marker (Robot)
+    if len(robot_path) and len(robot_times):
+        idx = int(np.argmin(np.abs(robot_times - timestamp)))
+        idx = min(idx, len(robot_path) - 1)
         fig.add_trace(
             go.Scatter3d(
-                x=[path[idx, 0]],
-                y=[path[idx, 1]],
-                z=[path[idx, 2]],
+                x=[robot_path[idx, 0]],
+                y=[robot_path[idx, 1]],
+                z=[robot_path[idx, 2]],
                 mode="markers",
-                marker=dict(color="red", size=4),
-                name="Current",
-                hovertemplate=f"Current t={times[idx]:.3f}s",
+                marker=dict(color="red", size=6),
+                name="Current (Robot)",
+                hovertemplate=f"Robot Current t={robot_times[idx]:.3f}s",
             )
         )
+
     fig.update_layout(
         title=title,
         scene=dict(
@@ -226,22 +273,29 @@ def build_path_3d(
             aspectmode="data",
             camera=dict(eye=dict(x=0, y=0, z=2), up=dict(x=0, y=1, z=0)),
         ),
-        height=420,
+        height=500,
         margin=dict(l=0, r=0, t=40, b=0),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        clickmode="event+select",
     )
     return fig
 
 
-def build_path_xy(
-    path: np.ndarray,
-    times: np.ndarray,
-    states: np.ndarray,
+def build_combined_path_xy(
+    robot_path: np.ndarray,
+    robot_times: np.ndarray,
+    robot_states: np.ndarray,
+    model_path: np.ndarray,
+    model_times: np.ndarray,
+    model_states: np.ndarray,
     timestamp: float,
     title: str,
 ):
     fig = go.Figure()
-    if len(path) and path.shape[1] >= 2 and len(times):
-        segments = _segment_states(times, path[:, :2], states)
+
+    # 1. Plot Robot Path
+    if len(robot_path) and robot_path.shape[1] >= 2 and len(robot_times):
+        segments = _segment_states(robot_times, robot_path[:, :2], robot_states)
         for segment in segments:
             seg_path = segment["path"]
             seg_times = segment["times"]
@@ -250,35 +304,62 @@ def build_path_xy(
             active = bool(segment["state"])
             color = "#111111" if active else "#1f77b4"
             dash = "solid" if active else "dash"
-            width = 3 if active else 1.5
             fig.add_trace(
                 go.Scatter(
                     x=seg_path[:, 0],
                     y=seg_path[:, 1],
                     mode="lines",
-                    line=dict(color=color, dash=dash, width=width),
+                    line=dict(color=color, dash=dash, width=1.5),
                     customdata=seg_times,
-                    hovertemplate="t=%{customdata:.3f}s",
+                    hovertemplate="Robot t=%{customdata:.3f}s",
+                    name="Robot",
                     showlegend=False,
                 )
             )
-        idx = int(np.argmin(np.abs(times - timestamp)))
-        idx = min(idx, len(path) - 1)
+
+    # 2. Plot Model Path
+    if len(model_path) and model_path.shape[1] >= 2 and len(model_times):
+        segments = _segment_states(model_times, model_path[:, :2], model_states)
+        for segment in segments:
+            seg_path = segment["path"]
+            seg_times = segment["times"]
+            if len(seg_path) < 2:
+                continue
+            active = bool(segment["state"])
+            color = "#ff7f0e" if active else "#aec7e8"
+            fig.add_trace(
+                go.Scatter(
+                    x=seg_path[:, 0],
+                    y=seg_path[:, 1],
+                    mode="lines",
+                    line=dict(color=color, width=3),
+                    customdata=seg_times,
+                    hovertemplate="Model t=%{customdata:.3f}s",
+                    name="Model",
+                    showlegend=False,
+                )
+            )
+
+    # 3. Current Position Marker (Robot)
+    if len(robot_path) and len(robot_times):
+        idx = int(np.argmin(np.abs(robot_times - timestamp)))
+        idx = min(idx, len(robot_path) - 1)
         fig.add_trace(
             go.Scatter(
-                x=[path[idx, 0]],
-                y=[path[idx, 1]],
+                x=[robot_path[idx, 0]],
+                y=[robot_path[idx, 1]],
                 mode="markers",
-                marker=dict(color="red", size=8),
+                marker=dict(color="red", size=10),
                 name="Current",
-                hovertemplate=f"Current t={times[idx]:.3f}s",
+                hovertemplate=f"Current t={robot_times[idx]:.3f}s",
             )
         )
+
     fig.update_layout(
         title=title,
         xaxis_title="X",
         yaxis_title="Y",
-        height=360,
+        height=500,
         margin=dict(l=40, r=40, t=40, b=40),
     )
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
@@ -413,7 +494,95 @@ def build_peak_y_plot(series: JsonlSeries, current_time: float):
         title="Peak Y Position",
         xaxis_title="Time (s)",
         yaxis_title="Peak Y",
+        height=220,
+        margin=dict(l=40, r=40, t=30, b=30),
+    )
+    return fig
+
+
+def build_peak_x_plot(series: JsonlSeries, current_time: float):
+    fig = go.Figure()
+    times = series.times
+    peaks = series.values.get("PeakX", np.array([]))
+    if len(times) and len(peaks):
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=peaks,
+                mode="lines",
+                line=dict(color="#17becf"),
+                customdata=times,
+            )
+        )
+        fig.add_vline(x=current_time, line=dict(color="red", dash="dash"))
+    fig.update_layout(
+        title="Peak X Position",
+        xaxis_title="Time (s)",
+        yaxis_title="Peak X",
+        height=220,
+        margin=dict(l=40, r=40, t=30, b=30),
+    )
+    return fig
+
+
+def build_robot_joint_velocity_plot(robot_data: RobotData, current_time: float):
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    times = robot_data.series.times
+    
+    # 1. Joint Values (Left Axis)
+    joints = robot_data.joints
+    for name, values in joints.items():
+        if len(values):
+            fig.add_trace(
+                go.Scatter(x=times, y=values, name=name, mode="lines", opacity=0.8),
+                secondary_y=False
+            )
+            
+    # 2. Velocity (Right Axis)
+    vel = robot_data.velocity
+    if len(vel):
+        fig.add_trace(
+            go.Scatter(x=times, y=vel, name="Velocity", mode="lines", line=dict(color="black", width=2)),
+            secondary_y=True
+        )
+    
+    fig.add_vline(x=current_time, line=dict(color="red", dash="dash"))
+    
+    fig.update_layout(
+        title="Robot Joints & Velocity",
+        xaxis_title="Time (s)",
+        height=500,
+        margin=dict(l=40, r=40, t=50, b=30),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    fig.update_yaxes(title_text="Joint Angle (deg)", secondary_y=False)
+    fig.update_yaxes(title_text="Velocity (mm/s)", secondary_y=True)
+    return fig
+
+
+def build_audio_energy_plot(audio_data: AudioData, current_time: float):
+    fig = go.Figure()
+    rms = audio_data.rms
+    if len(rms.times):
+        # Convert to dB: 20 * log10(RMS + eps)
+        eps = 1e-10
+        db_values = 20 * np.log10(rms.values + eps)
+        fig.add_trace(
+            go.Scatter(
+                x=rms.times,
+                y=db_values,
+                mode="lines",
+                name="Energy (dB)",
+                line=dict(color="#1f77b4")
+            )
+        )
+        fig.add_vline(x=current_time, line=dict(color="red", dash="dash"))
+    
+    fig.update_layout(
+        title="Audio Energy (Intensity)",
+        xaxis_title="Time (s)",
+        yaxis_title="Energy (dB)",
         height=200,
-        margin=dict(l=40, r=40, t=40, b=40),
+        margin=dict(l=40, r=40, t=30, b=30),
     )
     return fig

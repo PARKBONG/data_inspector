@@ -20,44 +20,8 @@ def build_layout(session_ids: List[str], default_session_id: str, default_sessio
         [
             html.H2("Sensor Inspector"),
             dcc.Store(id="label-store", data={}),
-            html.Div(
-                [
-                    html.Div(
-                        [
-                            html.Label("Anomaly label"),
-                            dcc.Dropdown(
-                                id="anomaly-type",
-                                options=[
-                                    {"label": "Anomaly", "value": "anomaly"},
-                                    {"label": "Interesting", "value": "interesting"},
-                                    {"label": "Issue", "value": "issue"},
-                                ],
-                                value="anomaly",
-                                clearable=False,
-                            ),
-                            dcc.Input(
-                                id="anomaly-note",
-                                placeholder="Notes",
-                                type="text",
-                            ),
-                            html.Label("Interval (seconds)"),
-                            dcc.RangeSlider(
-                                id="label-range",
-                                min=0,
-                                max=duration,
-                                value=[start_time, label_default_end],
-                                allowCross=False,
-                            ),
-                            html.Button("Add label", id="add-label-button"),
-                            html.Div(id="label-list"),
-                        ],
-                        className="label-panel",
-                    ),
-                    dcc.Graph(id="timeline-graph"),
-                ],
-                className="timeline-section",
-            ),
-            # Session Control Section
+            
+            # 1. Session Control Section (Sticky)
             html.Div(
                 [
                     html.Label("Session"),
@@ -89,48 +53,81 @@ def build_layout(session_ids: List[str], default_session_id: str, default_sessio
 
             # --- Path Section ---
             html.Hr(),
-            html.H3("Path"),
+            html.H3("Path Analysis"),
             html.Div(
                 [
-                    dcc.Graph(id="robot-path-graph", className="path-graph"),
-                    dcc.Graph(id="model-path-graph", className="path-graph"),
-                ],
-                style={"display": "flex", "gap": "1rem"},
-            ),
-            html.Div(
-                [
-                    dcc.Graph(id="robot-path-xy", className="path-graph"),
-                    dcc.Graph(id="model-path-xy", className="path-graph"),
+                    # Left: 3D Path
+                    html.Div(
+                        [
+                            html.H4("3D Path (Robot & Model Combined)"),
+                            dcc.Graph(id="path-3d-graph", className="path-graph"),
+                        ],
+                        style={"flex": "1"},
+                    ),
+                    # Right: Joints & Velocity
+                    html.Div(
+                        [
+                            html.H4("Robot Joints & Velocity"),
+                            dcc.Graph(id="robot-joints-velocity", className="path-graph"),
+                        ],
+                        style={"flex": "1"},
+                    ),
                 ],
                 style={"display": "flex", "gap": "1rem"},
             ),
 
             # --- Audio Section ---
             html.Hr(),
-            html.H3("Audio"),
+            html.H3("Audio Analysis"),
             html.Div(
                 [
+                    html.H4("Spectrogram"),
                     dcc.Graph(id="audio-spectrogram", className="spectrogram"),
+                    html.H4("Energy (dB)"),
+                    dcc.Graph(id="audio-energy", className="spectrogram"),
                 ]
             ),
 
-            # --- IR High Section ---
+            # --- Thermal Section ---
             html.Hr(),
-            html.H3("IR High"),
+            html.H3("Thermal Analysis"),
             html.Div(
                 [
-                    dcc.Graph(id="ir-high-graph", className="ir-graph", style={"flex": "2"}),
-                    dcc.Graph(id="ir-high-peak", style={"flex": "1", "height": "220px"}),
+                    # Left: IR High (Large)
+                    html.Div(
+                        [
+                            html.H4("IR High (Melt Pool)"),
+                            dcc.Graph(id="ir-high-graph", className="ir-graph", style={"height": "460px"}),
+                        ],
+                        style={"flex": "2"},
+                    ),
+                    # Right: Peak X and Y (Stacked)
+                    html.Div(
+                        [
+                            html.H4("Peak Coordinates (X, Y)"),
+                            dcc.Graph(id="ir-high-peak-x", style={"height": "220px"}),
+                            dcc.Graph(id="ir-high-peak-y", style={"height": "220px"}),
+                        ],
+                        style={"flex": "1"},
+                    ),
                 ],
-                style={"display": "flex", "gap": "1rem", "alignItems": "stretch"},
+                style={"display": "flex", "gap": "1rem", "alignItems": "flex-start"},
             ),
 
             # --- Supervision Section ---
             html.Hr(),
-            html.H3("Supervision (IR Low & RGB Frame)"),
+            html.H3("Supervision"),
             html.Div(
                 [
-                    dcc.Graph(id="ir-low-graph", className="ir-graph", style={"flex": "1"}),
+                    # Left: IR Low
+                    html.Div(
+                        [
+                            html.H4("IR Low"),
+                            dcc.Graph(id="ir-low-graph", className="ir-graph"),
+                        ],
+                        style={"flex": "1"},
+                    ),
+                    # Right: RGB Frame
                     html.Div(
                         [
                             html.H4("RGB Frame"),
@@ -139,13 +136,64 @@ def build_layout(session_ids: List[str], default_session_id: str, default_sessio
                                 style={
                                     "maxWidth": "100%",
                                     "objectFit": "contain",
+                                    "borderRadius": "8px",
+                                    "border": "1px solid #ddd",
                                 },
                             ),
                         ],
                         style={"flex": "1", "textAlign": "center"},
                     ),
                 ],
-                style={"display": "flex", "gap": "1rem", "alignItems": "center"},
+                style={"display": "flex", "gap": "2rem", "alignItems": "center"},
+            ),
+
+            # --- Anomaly Labeling Section (Bottom) ---
+            html.Hr(),
+            html.H3("Anomaly Labeling"),
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.Label("Anomaly type"),
+                            dcc.Dropdown(
+                                id="anomaly-type",
+                                options=[
+                                    {"label": "Anomaly", "value": "anomaly"},
+                                    {"label": "Interesting", "value": "interesting"},
+                                    {"label": "Issue", "value": "issue"},
+                                ],
+                                value="anomaly",
+                                clearable=False,
+                            ),
+                            dcc.Input(
+                                id="anomaly-note",
+                                placeholder="Notes",
+                                type="text",
+                                style={"width": "100%", "marginTop": "0.5rem"},
+                            ),
+                            html.Label("Interval (seconds)", style={"marginTop": "1rem", "display": "block"}),
+                            dcc.RangeSlider(
+                                id="label-range",
+                                min=0,
+                                max=duration,
+                                value=[start_time, label_default_end],
+                                allowCross=False,
+                            ),
+                            html.Button("Add label", id="add-label-button", style={"marginTop": "1rem"}),
+                            html.Div(id="label-list", style={"marginTop": "1rem"}),
+                        ],
+                        className="label-panel",
+                        style={"flex": "1", "padding": "1rem", "border": "1px solid #eee", "borderRadius": "8px"},
+                    ),
+                    html.Div(
+                        [
+                            html.H4("Timeline Labels"),
+                            dcc.Graph(id="timeline-graph"),
+                        ],
+                        style={"flex": "3"},
+                    ),
+                ],
+                style={"display": "flex", "gap": "2rem"},
             ),
         ]
     )
@@ -155,10 +203,20 @@ def _initial_time_values(session: SessionData):
     max_time = session.duration if session.duration else 0.0
     start = min(session.start_time, max_time)
     label_end = start if max_time == 0 else min(max_time, start + 5)
+    
+    # Marks for the slider
+    marks = {0: "0s", int(max_time): f"{int(max_time)}s"}
+    first_arc, last_arc = session.arc_on_range
+    if first_arc is not None:
+        marks[first_arc] = {"label": "⚡", "style": {"color": "green", "fontWeight": "bold"}}
+    if last_arc is not None:
+        marks[last_arc] = {"label": "🛑", "style": {"color": "darkorange", "fontWeight": "bold"}}
+        
     return (
         0.0,
         max_time,
         start,
+        marks,
         0.0,
         max_time,
         [start, label_end],
@@ -253,73 +311,43 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
             ]
         )
 
-    # Paths (3D + XY)
+    # Combined Media Update
     @app.callback(
-        Output("robot-path-graph", "figure"),
-        Output("model-path-graph", "figure"),
-        Output("robot-path-xy", "figure"),
-        Output("model-path-xy", "figure"),
-        Input("time-slider", "value"),
-        Input("session-selector", "value"),
-    )
-    def update_paths(current_time, session_id):
-        current_time = float(current_time or 0.0)
-        session = get_session(session_id)
-        robot_fig = figures.build_path_3d(
-            session.robot.path_xyz,
-            session.robot.series.times,
-            session.robot.arc_on,
-            current_time,
-            "Robot Path (XYZ)",
-        )
-        model_fig = figures.build_path_3d(
-            session.model.path_xyz,
-            session.model.series.times,
-            session.model.laser_on,
-            current_time,
-            "Model Path (XYZ)",
-        )
-        robot_xy = figures.build_path_xy(
-            session.robot.path_xyz,
-            session.robot.series.times,
-            session.robot.arc_on,
-            current_time,
-            "Robot Path (XY)",
-        )
-        model_xy = figures.build_path_xy(
-            session.model.path_xyz,
-            session.model.series.times,
-            session.model.laser_on,
-            current_time,
-            "Model Path (XY)",
-        )
-        return robot_fig, model_fig, robot_xy, model_xy
-
-    # Spectrogram with time indicator
-    @app.callback(
+        Output("path-3d-graph", "figure"),
+        Output("robot-joints-velocity", "figure"),
         Output("audio-spectrogram", "figure"),
-        Input("time-slider", "value"),
-        Input("session-selector", "value"),
-    )
-    def update_spectrogram(current_time, session_id):
-        current_time = float(current_time or 0.0)
-        session = get_session(session_id)
-        return figures.build_spectrogram(session.audio, current_time)
-
-    @app.callback(
+        Output("audio-energy", "figure"),
+        Output("ir-high-graph", "figure"),
+        Output("ir-high-peak-x", "figure"),
+        Output("ir-high-peak-y", "figure"),
+        Output("ir-low-graph", "figure"),
         Output("rgb-frame", "src"),
         Output("rgb-frame", "style"),
-        Output("ir-high-graph", "figure"),
-        Output("ir-low-graph", "figure"),
-        Output("ir-high-peak", "figure"),
         Input("time-slider", "value"),
         Input("session-selector", "value"),
     )
-    def update_media(current_time, session_id):
+    def update_dashboard(current_time, session_id):
         current_time = float(current_time or 0.0)
         session = get_session(session_id)
         
-        # Calculate height based on IR Low aspect ratio to sync with RGB Frame
+        # 1. Path Figs
+        fig_3d = figures.build_combined_path_3d(
+            session.robot.path_xyz,
+            session.robot.series.times,
+            session.robot.arc_on,
+            session.model.path_xyz,
+            session.model.series.times,
+            session.model.laser_on,
+            current_time,
+            f"XYZ Path (t={current_time:.2f}s)",
+        )
+        fig_joints = figures.build_robot_joint_velocity_plot(session.robot, current_time)
+
+        # 2. Audio Figs
+        fig_spec = figures.build_spectrogram(session.audio, current_time)
+        fig_energy = figures.build_audio_energy_plot(session.audio, current_time)
+
+        # 3. Thermal & Supervision
         ir_low_reader = session.ir_low.raw_reader
         width = (ir_low_reader.width if ir_low_reader else 0) or 100
         height = (ir_low_reader.height if ir_low_reader else 0) or 100
@@ -331,40 +359,47 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
             "maxWidth": "100%",
             "height": calculated_height,
             "objectFit": "contain",
+            "borderRadius": "8px",
+            "border": "1px solid #ddd",
         }
         
         metadata = session.get_ir_high_metadata(current_time)
-        ir_high = figures.build_ir(session.ir_high.raw_reader, current_time, "IR High", metadata=metadata, draw_contour=True, draw_peak=True)
-        ir_low = figures.build_ir(session.ir_low.raw_reader, current_time, "IR Low")
-        peak_fig = figures.build_peak_y_plot(session.ir_high.json_series, current_time)
+        ir_high = figures.build_ir(session.ir_high.raw_reader, current_time, "IR High", metadata=metadata)
+        ir_low = figures.build_ir(session.ir_low.raw_reader, current_time, "IR Low", draw_contour=False, draw_peak=False)
+        peak_x_fig = figures.build_peak_x_plot(session.ir_high.json_series, current_time)
+        peak_y_fig = figures.build_peak_y_plot(session.ir_high.json_series, current_time)
         
-        return rgb_src, rgb_style, ir_high, ir_low, peak_fig
+        return fig_3d, fig_joints, fig_spec, fig_energy, ir_high, peak_x_fig, peak_y_fig, ir_low, rgb_src, rgb_style
 
     # Synchronize time controls (slider and label range)
     @app.callback(
         Output("time-slider", "min"),
         Output("time-slider", "max"),
         Output("time-slider", "value"),
+        Output("time-slider", "marks"),
         Output("label-range", "min"),
         Output("label-range", "max"),
         Output("label-range", "value"),
         Input("session-selector", "value"),
         Input("timeline-graph", "clickData"),
-        Input("robot-path-graph", "clickData"),
-        Input("model-path-graph", "clickData"),
-        Input("robot-path-xy", "clickData"),
-        Input("model-path-xy", "clickData"),
-        Input("ir-high-peak", "clickData"),
+        Input("path-3d-graph", "clickData"),
+        Input("robot-joints-velocity", "clickData"),
+        Input("audio-spectrogram", "clickData"),
+        Input("audio-energy", "clickData"),
+        Input("ir-high-peak-x", "clickData"),
+        Input("ir-high-peak-y", "clickData"),
         State("time-slider", "value"),
+        prevent_initial_call=False,
     )
     def sync_time_controls(
         session_id,
         timeline_click,
-        robot_click,
-        model_click,
-        robot_xy_click,
-        model_xy_click,
-        peak_click,
+        path_click,
+        joints_click,
+        audio_click,
+        energy_click,
+        peak_x_click,
+        peak_y_click,
         current_value,
     ):
         session = get_session(session_id)
@@ -378,11 +413,12 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
 
         trigger_map = {
             "timeline-graph.clickData": (timeline_click, "x"),
-            "robot-path-graph.clickData": (robot_click, "customdata"),
-            "model-path-graph.clickData": (model_click, "customdata"),
-            "robot-path-xy.clickData": (robot_xy_click, "customdata"),
-            "model-path-xy.clickData": (model_xy_click, "customdata"),
-            "ir-high-peak.clickData": (peak_click, "x"),
+            "path-3d-graph.clickData": (path_click, "customdata"),
+            "robot-joints-velocity.clickData": (joints_click, "x"),
+            "audio-spectrogram.clickData": (audio_click, "x"),
+            "audio-energy.clickData": (energy_click, "x"),
+            "ir-high-peak-x.clickData": (peak_x_click, "x"),
+            "ir-high-peak-y.clickData": (peak_y_click, "x"),
         }
 
         data_key = trigger_map.get(trigger)
@@ -393,7 +429,7 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
         if new_time is None:
             raise PreventUpdate
 
-        return no_update, no_update, new_time, no_update, no_update, no_update
+        return no_update, no_update, new_time, no_update, no_update, no_update, no_update
 
     return app
 
