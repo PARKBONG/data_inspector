@@ -82,7 +82,7 @@ class SessionData:
         self.audio = AudioLoader(self.path / "Audio" / "0.wav").run()
         self.ir_high = IRData(
             json_series=JsonlLoader(self.path / "IR_High" / "0.jsonl").load(
-                ["MaxTemp", "PeakX", "PeakY", "ContourPoints"]
+                ["MaxTemp", "PeakX", "PeakY", "Area", "ContourPoints"]
             ),
             raw_reader=IRRawLoader(self.path / "IR_High" / "0.raw", (1100, 2000)),
         )
