@@ -173,6 +173,7 @@ def build_timeline(session: SessionData, labels: List[Dict[str, Any]]) -> go.Fig
         margin=dict(l=40, r=40, t=60, b=40),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         hovermode="x unified",
+        template="plotly_white",
     )
     fig.update_yaxes(title_text="Logic (0/1)", secondary_y=False, range=[-0.1, 1.2])
     fig.update_yaxes(title_text="Temperature (°C)", secondary_y=True)
@@ -272,11 +273,14 @@ def build_combined_path_3d(
             zaxis_title="Z",
             aspectmode="data",
             camera=dict(eye=dict(x=0, y=0, z=2), up=dict(x=0, y=1, z=0)),
+            # Light theme for 3D
+            bgcolor="white",
         ),
         height=500,
         margin=dict(l=0, r=0, t=40, b=0),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         clickmode="event+select",
+        template="plotly_white",
     )
     return fig
 
@@ -361,6 +365,7 @@ def build_combined_path_xy(
         yaxis_title="Y",
         height=500,
         margin=dict(l=40, r=40, t=40, b=40),
+        template="plotly_white",
     )
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
     return fig
@@ -387,37 +392,37 @@ def build_spectrogram(audio, current_time: Optional[float] = None):
         yaxis_title="Frequency (Hz)",
         height=300,
         margin=dict(l=40, r=40, t=40, b=40),
+        template="plotly_white",
     )
     return fig
 
 
-def build_ir(reader, timestamp: float, title: str, metadata: Optional[Dict[str, Any]] = None, draw_contour: bool = True, draw_peak: bool = True):
-    fig = go.Figure()
-    if reader is None:
-        fig.update_layout(title=f"{title} (not available)")
-        return fig
+def build_ir(reader, timestamp, title, metadata=None, draw_contour=True, draw_peak=True):
+    if not reader:
+        return go.Figure()
     frame = reader.frame_values(timestamp)
-    if frame is not None:
-        vmin, vmax = reader.temp_range
-        # Plotly heatmaps are drawn from bottom-left by default.
-        # Our data is likely (H, W) starting from top-left.
-        # We use origin='lower' in imshow or flip the data if using go.Heatmap.
-        fig.add_trace(
-            go.Heatmap(
-                z=frame,
-                colorscale="Hot",
-                zmin=vmin,
-                zmax=vmax,
-                showscale=False,
-                hoverinfo="z+x+y",
-                name="IR Heatmap",
-            )
+    if frame is None:
+        return go.Figure()
+    
+    vmin, vmax = reader.temp_range
+    # Using 'Inferno' as suggested by reference code
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=frame,
+            colorscale="Inferno",
+            zmin=vmin,
+            zmax=vmax,
+            showscale=True,
+            colorbar=dict(title=dict(text="Temp (°C)", side="right")),
+            hoverinfo="z+x+y",
+            name="IR Heatmap",
         )
-        
-        if metadata and draw_contour:
+    )
+    
+    if metadata:
+        if draw_contour:
             contour_points = _parse_contour_points(metadata.get("ContourPoints"))
             if contour_points:
-                # Close the contour by adding the first point at the end
                 closed_points = list(contour_points) + [contour_points[0]]
                 xs, ys = zip(*closed_points)
                 fig.add_trace(
@@ -430,13 +435,10 @@ def build_ir(reader, timestamp: float, title: str, metadata: Optional[Dict[str, 
                         showlegend=False,
                     )
                 )
-        
-        if metadata and draw_peak:
+        if draw_peak:
             peak_x = _coerce_float(metadata.get("PeakX"))
             peak_y = _coerce_float(metadata.get("PeakY"))
             area = _coerce_float(metadata.get("Area"))
-            # Only draw peak if it's not (0,0) or if area > 0
-            # (0,0) is often a dummy value when no signal is found.
             if peak_x is not None and peak_y is not None:
                 if (peak_x > 0 or peak_y > 0) and (area is None or area > 0):
                     fig.add_trace(
@@ -456,21 +458,22 @@ def build_ir(reader, timestamp: float, title: str, metadata: Optional[Dict[str, 
         title=title,
         xaxis_title="X",
         yaxis_title="Y",
-        width=420,
+        width=480, # Increased slightly for colorbar
         height=420 * aspect,
-        margin=dict(l=20, r=20, t=40, b=40),
-        plot_bgcolor="black",
-        paper_bgcolor="black",
-        font=dict(color="white"),
+        margin=dict(l=20, r=60, t=40, b=40),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        font=dict(color="black"),
+        template="plotly_white",
     )
     fig.update_yaxes(
         autorange="reversed",
         scaleanchor="x",
         scaleratio=1,
-        gridcolor="#333333",
+        gridcolor="#eeeeee",
     )
     fig.update_xaxes(
-        gridcolor="#333333",
+        gridcolor="#eeeeee",
     )
     return fig
 
@@ -553,7 +556,8 @@ def build_robot_joint_velocity_plot(robot_data: RobotData, current_time: float):
         xaxis_title="Time (s)",
         height=500,
         margin=dict(l=40, r=40, t=50, b=30),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        template="plotly_white",
     )
     fig.update_yaxes(title_text="Joint Angle (deg)", secondary_y=False)
     fig.update_yaxes(title_text="Velocity (mm/s)", secondary_y=True)
@@ -584,5 +588,6 @@ def build_audio_energy_plot(audio_data: AudioData, current_time: float):
         yaxis_title="Energy (dB)",
         height=200,
         margin=dict(l=40, r=40, t=30, b=30),
+        template="plotly_white",
     )
     return fig
