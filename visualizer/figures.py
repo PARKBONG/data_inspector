@@ -562,7 +562,7 @@ def build_robot_joint_velocity_plot(robot_data: RobotData, current_time: float, 
     for name, values in joints.items():
         if len(values):
             fig.add_trace(
-                go.Scatter(x=times, y=values, name=name, mode="lines", opacity=0.8),
+                go.Scatter(x=times, y=values, name=name, mode="lines", opacity=0.8, customdata=times),
                 secondary_y=False
             )
             
@@ -579,6 +579,7 @@ def build_robot_joint_velocity_plot(robot_data: RobotData, current_time: float, 
     
     fig.update_layout(
         title="Robot Joints & Velocity",
+        clickmode="event+select",
         xaxis_title="Time (s)",
         height=500,
         margin=dict(l=40, r=40, t=50, b=30),
