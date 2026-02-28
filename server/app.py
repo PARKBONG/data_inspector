@@ -138,7 +138,6 @@ def build_layout(session_ids: List[str], default_session_id: str, default_sessio
                                 id="rgb-frame",
                                 style={
                                     "maxWidth": "100%",
-                                    "height": "420px",
                                     "objectFit": "contain",
                                 },
                             ),
@@ -309,6 +308,7 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
 
     @app.callback(
         Output("rgb-frame", "src"),
+        Output("rgb-frame", "style"),
         Output("ir-high-graph", "figure"),
         Output("ir-low-graph", "figure"),
         Output("ir-high-peak", "figure"),
@@ -318,13 +318,27 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
     def update_media(current_time, session_id):
         current_time = float(current_time or 0.0)
         session = get_session(session_id)
+        
+        # Calculate height based on IR Low aspect ratio to sync with RGB Frame
+        ir_low_reader = session.ir_low.raw_reader
+        width = (ir_low_reader.width if ir_low_reader else 0) or 100
+        height = (ir_low_reader.height if ir_low_reader else 0) or 100
+        aspect = height / width
+        calculated_height = f"{int(420 * aspect)}px"
+        
         rgb_src = media.rgb_image_source(session.rgb_sequence, current_time)
+        rgb_style = {
+            "maxWidth": "100%",
+            "height": calculated_height,
+            "objectFit": "contain",
+        }
+        
         metadata = session.get_ir_high_metadata(current_time)
         ir_high = figures.build_ir(session.ir_high.raw_reader, current_time, "IR High", metadata=metadata, draw_contour=True, draw_peak=True)
         ir_low = figures.build_ir(session.ir_low.raw_reader, current_time, "IR Low")
         peak_fig = figures.build_peak_y_plot(session.ir_high.json_series, current_time)
         
-        return rgb_src, ir_high, ir_low, peak_fig
+        return rgb_src, rgb_style, ir_high, ir_low, peak_fig
 
     # Synchronize time controls (slider and label range)
     @app.callback(
