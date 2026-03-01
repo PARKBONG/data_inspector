@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 
 import numpy as np
 import dash
-from dash import Dash, Input, Output, State, dcc, html, no_update
+from dash import Dash, Input, Output, State, dcc, html, no_update, ALL
 from dash.exceptions import PreventUpdate
 
 from loader.session import SessionData
@@ -22,6 +22,7 @@ def build_layout(session_ids: List[str], default_session_id: str, default_sessio
             html.H2("Sensor Inspector"),
             dcc.Store(id="label-store", data={}),
             dcc.Store(id="label-setup-store", data={"mode": 1, "time1": None}),
+            dcc.Store(id="note-history-store", data=[], storage_type="local"),
             
             # 1. Session Control Section (Sticky)
             html.Div(
@@ -189,12 +190,16 @@ def build_layout(session_ids: List[str], default_session_id: str, default_sessio
                                 value="anomaly",
                                 clearable=False,
                             ),
-                            dcc.Input(
-                                id="anomaly-note",
-                                placeholder="Notes",
-                                type="text",
-                                style={"width": "100%", "marginTop": "0.5rem"},
-                            ),
+                            html.Div([
+                                dcc.Input(
+                                    id="anomaly-note",
+                                    placeholder="Notes (type or select from history)",
+                                    type="text",
+                                    list="note-history-list",
+                                    style={"width": "100%", "marginTop": "0.5rem"},
+                                ),
+                                html.Datalist(id="note-history-list", children=[])
+                            ]),
                             html.Label("Interval (seconds)", style={"marginTop": "1rem", "display": "block"}),
                             dcc.RangeSlider(
                                 id="label-range",
@@ -203,6 +208,22 @@ def build_layout(session_ids: List[str], default_session_id: str, default_sessio
                                 value=[0.0, 0.0],
                                 allowCross=True,
                             ),
+                            html.Button(
+                                "Add Label",
+                                id="add-label-button",
+                                n_clicks=0,
+                                style={
+                                    "width": "100%",
+                                    "marginTop": "1rem",
+                                    "height": "40px",
+                                    "backgroundColor": "#6f42c1", # Purple for Add
+                                    "color": "white",
+                                    "border": "none",
+                                    "borderRadius": "4px",
+                                    "fontWeight": "bold",
+                                    "cursor": "pointer"
+                                }
+                            ),
                             html.Div(id="label-list", style={"marginTop": "1rem"}),
                         ],
                         className="label-panel",
@@ -210,7 +231,24 @@ def build_layout(session_ids: List[str], default_session_id: str, default_sessio
                     ),
                     html.Div(
                         [
-                            html.H4("Timeline Labels"),
+                            html.Div([
+                                html.H4("Timeline Labels", style={"display": "inline-block", "marginRight": "1rem"}),
+                                html.Button(
+                                    "Export Labels (.jsonl)",
+                                    id="btn-export",
+                                    style={
+                                        "backgroundColor": "#28a745",
+                                        "color": "white",
+                                        "border": "none",
+                                        "borderRadius": "4px",
+                                        "padding": "0.4rem 1rem",
+                                        "cursor": "pointer",
+                                        "fontSize": "0.9rem"
+                                    }
+                                ),
+                                html.Span(id="export-status", style={"marginLeft": "1rem", "color": "green", "fontSize": "0.9rem"}),
+                                dcc.Download(id="download-labels"),
+                            ]),
                             dcc.Graph(id="timeline-graph"),
                         ],
                         style={"flex": "3"},
@@ -253,14 +291,17 @@ def _extract_time_from_click(data: Dict[str, Any] | None, key: str) -> float | N
     if not points:
         return None
     
-    # Strictly use the provided key (customdata for 3D, x for 2D)
+    # Debug print to help identify available keys in problematic environments
+    # print(f"DEBUG: Point keys: {list(points[0].keys())}, Trigger Key: {key}")
+    
     value = points[0].get(key)
     
     if value is None:
+        # Fallback: some plotly versions/trace types might nest customdata differently
         return None
         
-    # Handle list wrapping (Scatter3d often wraps customdata in a list)
-    if isinstance(value, (list, np.ndarray)) and len(value) > 0:
+    # Robust extraction: unwrap potentially nested lists/arrays (e.g., [[timestamp]])
+    while isinstance(value, (list, np.ndarray)) and len(value) > 0:
         value = value[0]
         
     try:
@@ -295,26 +336,19 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
         labels = (label_data or {}).get(session_id, [])
         return figures.build_timeline(session, labels, active_range=range_value)
 
-    # Label setup via Set Time button
+    # 1단계: 시간 영역 지정 (Set Time 버튼)
     @app.callback(
         Output("label-setup-store", "data"),
         Output("set-time-button", "children"),
         Output("set-time-button", "style"),
-        Output("label-store", "data"),
         Output("label-range", "value", allow_duplicate=True),
-        Output("anomaly-note", "value"),
         Input("set-time-button", "n_clicks"),
         State("time-slider", "value"),
         State("label-setup-store", "data"),
-        State("session-selector", "value"),
-        State("anomaly-type", "value"),
-        State("anomaly-note", "value"),
-        State("label-store", "data"),
         prevent_initial_call=True,
     )
-    def capture_set_time(n_clicks, t_current, setup_data, session_id, a_type, a_note, existing_labels):
+    def capture_set_time(n_clicks, t_current, setup_data):
         setup_data = setup_data or {"mode": 1, "time1": None}
-        existing_labels = existing_labels or {}
         
         button_style = {
             "marginLeft": "2rem",
@@ -329,31 +363,72 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
         }
 
         if setup_data["mode"] == 1:
-            # Capture first point
+            # 첫 번째 포인트 캡처
             setup_data["mode"] = 2
             setup_data["time1"] = t_current
-            button_style["backgroundColor"] = "#dc3545" # Red for "Stop/Set 2"
-            return setup_data, "Set Time 2", button_style, no_update, [t_current, t_current], no_update
+            button_style["backgroundColor"] = "#dc3545" # Red
+            return setup_data, "Set Time 2", button_style, [t_current, t_current]
         else:
-            # Capture second point and save
+            # 두 번째 포인트 캡처 (저장은 아직 안 함)
             t1 = setup_data["time1"]
             t2 = t_current
             
-            if session_id not in existing_labels:
-                existing_labels[session_id] = []
-            
-            existing_labels[session_id].append({
-                "start": min(t1, t2),
-                "end": max(t1, t2),
-                "label": a_type,
-                "note": a_note
-            })
-            
             setup_data["mode"] = 1
             setup_data["time1"] = None
-            button_style["backgroundColor"] = "#007bff" # Blue for "Set 1"
+            button_style["backgroundColor"] = "#007bff" # Blue
             
-            return setup_data, "Set Time 1", button_style, existing_labels, [min(t1, t2), max(t1, t2)], ""
+            return setup_data, "Set Time 1", button_style, [min(t1, t2), max(t1, t2)]
+
+    # 2단계: 실제로 Store에 저장 (Add Label 버튼)
+    @app.callback(
+        Output("label-store", "data", allow_duplicate=True),
+        Output("note-history-store", "data"),
+        Input("add-label-button", "n_clicks"),
+        State("label-range", "value"),
+        State("anomaly-type", "value"),
+        State("anomaly-note", "value"),
+        State("session-selector", "value"),
+        State("label-store", "data"),
+        State("note-history-store", "data"),
+        prevent_initial_call=True,
+    )
+    def add_label_to_store(n_clicks, range_val, a_type, a_note, session_id, existing_labels, history):
+        if not n_clicks:
+            raise PreventUpdate
+        
+        # 1. Update Labels
+        existing_labels = existing_labels or {}
+        if session_id not in existing_labels:
+            existing_labels[session_id] = []
+            
+        existing_labels[session_id].append({
+            "start": float(range_val[0]),
+            "end": float(range_val[1]),
+            "label": a_type,
+            "note": a_note or ""
+        })
+
+        # 2. Update History Cache (Most recent first)
+        history = history or []
+        if a_note and a_note.strip():
+            note_stripped = a_note.strip()
+            if note_stripped in history:
+                history.remove(note_stripped)
+            history.insert(0, note_stripped)
+            # Limit history size to 20
+            history = history[:20]
+        
+        return existing_labels, history
+
+    # Update DataList for Note History
+    @app.callback(
+        Output("note-history-list", "children"),
+        Input("note-history-store", "data")
+    )
+    def update_note_history_list(history):
+        if not history:
+            return []
+        return [html.Option(value=note) for note in history]
 
     @app.callback(
         Output("label-list", "children"),
@@ -364,14 +439,140 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
         labels = (label_data or {}).get(session_id, [])
         if not labels:
             return html.P("No labels yet.")
+        
         return html.Ul(
             [
                 html.Li(
-                    f"[{item['label']}] {item['start']:.3f}-{item['end']:.3f}s — {item.get('note','')}"
+                    [
+                        html.Span(f"[{item['label']}] {item['start']:.3f}-{item['end']:.3f}s — {item.get('note','')}", style={"marginRight": "10px"}),
+                        html.Button(
+                            "❌", 
+                            id={"type": "delete-label", "index": i},
+                            n_clicks=0,
+                            style={
+                                "border": "none", 
+                                "background": "none", 
+                                "cursor": "pointer", 
+                                "padding": "0 2px",
+                                "fontSize": "14px"
+                            },
+                            title="Delete Label"
+                        )
+                    ],
+                    style={"marginBottom": "5px", "display": "flex", "alignItems": "center"}
                 )
-                for item in labels
-            ]
+                for i, item in enumerate(labels)
+            ],
+            style={"paddingLeft": "1.2rem"}
         )
+
+    # Label delete functionality
+    @app.callback(
+        Output("label-store", "data", allow_duplicate=True),
+        Input({"type": "delete-label", "index": ALL}, "n_clicks"),
+        State("label-store", "data"),
+        State("session-selector", "value"),
+        prevent_initial_call=True,
+    )
+    def delete_label(n_clicks, label_data, session_id):
+        if not dash.callback_context.triggered:
+            raise PreventUpdate
+        
+        # Check if any click actually happened
+        if not any(n_clicks):
+            raise PreventUpdate
+
+        triggered_id = dash.callback_context.triggered_id
+        if not isinstance(triggered_id, dict) or triggered_id.get("type") != "delete-label":
+            raise PreventUpdate
+            
+        idx = triggered_id["index"]
+        
+        if label_data and session_id in label_data:
+            labels = label_data[session_id]
+            if 0 <= idx < len(labels):
+                labels.pop(idx)
+                return label_data
+        
+        raise PreventUpdate
+
+    # Export Labels functionality (Server-side writing)
+    @app.callback(
+        Output("export-status", "children"),
+        Output("download-labels", "data"),
+        Input("btn-export", "n_clicks"),
+        State("label-store", "data"),
+        State("session-selector", "value"),
+        prevent_initial_call=True,
+    )
+    def export_labels(n_clicks, label_data, session_id):
+        if not label_data:
+            # Metadata might still be valuable even without annotations
+            label_data = {}
+        
+        import json
+        from datetime import datetime
+        
+        # 1. Prepare Nested Content
+        try:
+            session = get_session(session_id)
+            first_arc, last_arc = session.arc_on_range
+            
+            # Automatically detect Components (Laser segments)
+            m_times = session.model.series.times
+            m_laser = session.model.laser_on
+            components = []
+            if len(m_times) > 0 and len(m_laser) > 0:
+                # Detect starts and ends of laser events
+                diff = np.diff(m_laser.astype(int), prepend=0, append=0)
+                starts = np.where(diff == 1)[0]
+                ends = np.where(diff == -1)[0] - 1 
+                for i, (s, e) in enumerate(zip(starts, ends)):
+                    # Guard for index bounds
+                    e_idx = min(e, len(m_times) - 1)
+                    components.append({
+                        "start": round(float(m_times[s]), 4),
+                        "end": round(float(m_times[e_idx]), 4),
+                        "label": "Normal",
+                        "note": str(i + 1) # Component Number
+                    })
+
+            labels = label_data.get(session_id, [])
+            
+            report = {
+                "session_id": session_id,
+                "overall_process": {
+                    "start": round(first_arc, 4) if first_arc is not None else None,
+                    "end": round(last_arc, 4) if last_arc is not None else None,
+                    "label": "Full Arc Operation"
+                },
+                "components": components,
+                "anomaly_annotations": [
+                    {
+                        "start": round(item["start"], 4),
+                        "end": round(item["end"], 4),
+                        "label": item["label"],
+                        "note": item.get("note", "")
+                    }
+                    for item in labels
+                ],
+                "exported_at": datetime.now().isoformat()
+            }
+            output_str = json.dumps(report, indent=4, ensure_ascii=False)
+
+            # 2. Write directly to the session directory
+            export_path = session.path / "session_report.json"
+            with open(export_path, "w", encoding="utf-8") as f:
+                f.write(output_str)
+            
+            status_msg = f"Saved to {export_path.name} ✅"
+            download_data = dict(content=output_str, filename=f"report_{session_id}.json")
+            return status_msg, download_data
+            
+        except Exception as e:
+            import traceback
+            print(traceback.format_exc())
+            return f"Export failed: {str(e)}", no_update
 
     # Combined Media Update
     @app.callback(

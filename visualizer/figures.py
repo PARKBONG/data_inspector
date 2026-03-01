@@ -228,8 +228,8 @@ def build_combined_path_3d(
                     z=seg_path[:, 2],
                     mode="lines+markers",
                     line=dict(color=color, dash=dash, width=3),
-                    marker=dict(size=1, opacity=0), # Invisible markers for better click detection
-                    hovertemplate="Robot t=%{customdata:.3f}s",
+                    marker=dict(size=8, opacity=0.01), # Increased size and fixed opacity
+                    hovertemplate="Robot t=%{customdata:.3f}s<extra></extra>", # Added <extra></extra> for cleaner hover
                     customdata=seg_times,
                     name="Robot (Arc On)" if active else "Robot (Arc Off)",
                     showlegend=True if active else False,
@@ -259,8 +259,8 @@ def build_combined_path_3d(
                     z=seg_path[:, 2],
                     mode="lines+markers",
                     line=dict(color=color, width=5),
-                    marker=dict(size=1, opacity=0),
-                    hovertemplate="Model t=%{customdata:.3f}s",
+                    marker=dict(size=8, opacity=0.01),
+                    hovertemplate="Model t=%{customdata:.3f}s<extra></extra>",
                     customdata=seg_times,
                     name="Model (Laser On)" if active else "Model (Laser Off)",
                     showlegend=True if active else False,
