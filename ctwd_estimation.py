@@ -1,9 +1,11 @@
 import numpy as np
-from typing import Optional, Tuple, Protocol, List
+from typing import Optional, Tuple, Protocol, List, Dict, Any
 from pathlib import Path
 import re
 import matplotlib.pyplot as plt
 from loader.session import SessionData
+
+# --- 1. Protocols & Component Classes (Top level for visibility) ---
 
 class DynamicModel(Protocol):
     """Protocol for state transition models."""
@@ -30,6 +32,11 @@ class ConstantVelocityModel:
         
         x_pred = F @ x
         P_pred = F @ P @ F.T + Q
+        
+        # Enforce symmetry (Better than just P_pred = F @ P @ F.T + Q)
+        # Numerical errors can make P slightly non-symmetric, which breaks KF logic.
+        P_pred = 0.5 * (P_pred + P_pred.T)
+        
         return x_pred, P_pred
 
 class MeasurementModel(Protocol):
@@ -56,6 +63,62 @@ class PositionMeasurementModel:
     def get_R(self) -> float:
         return self.r_meas
 
+# --- 2. Data Infrastructure (Decoupled) ---
+
+class SessionDataLoader:
+    """Responsibility: Extract raw data from SessionData object."""
+    @staticmethod
+    def load(session: SessionData) -> Dict[str, Any]:
+        """ Extracts (times, peak_y, robot_times, arc_on) into a dictionary. """
+        series = session.ir_high.json_series
+        times = np.asarray(series.times, dtype=float)
+        peak_y = np.asarray(series.values.get("PeakY", []), dtype=float)
+        n = min(len(times), len(peak_y))
+        
+        # Robot Arc series
+        robot_times = np.asarray(session.robot.series.times, dtype=float)
+        arc_on = np.asarray(session.robot.arc_on, dtype=float)
+        
+        return {
+            "times": times[:n],
+            "peak_y": peak_y[:n],
+            "robot_times": robot_times,
+            "arc_on": arc_on,
+            "session_id": session.path.name,
+            "arc_range": session.arc_on_range
+        }
+
+class EstimationProcessor:
+    """Responsibility: Convert raw sensor data to physical units and run estimation."""
+    def __init__(self, a: float, b: float):
+        self.a = a
+        self.b = b
+
+    def process_data(self, data: Dict[str, Any], estimator: 'RobustEstimator') -> Dict[str, Any]:
+        times = data["times"]
+        peak_y = data["peak_y"]
+        
+        # 1. Physical Conversion (Calibration)
+        z_raw = np.full_like(peak_y, np.nan)
+        mask = np.isfinite(peak_y)
+        z_raw[mask] = self.a * peak_y[mask] + self.b
+
+        # 2. Run Filter
+        results = run_estimation(times, z_raw, estimator)
+        
+        # 3. Combine results with metadata for plotting
+        results.update({
+            "z_raw": z_raw,
+            "times": times,
+            "robot_times": data["robot_times"],
+            "arc_on": data["arc_on"],
+            "session_id": data["session_id"],
+            "arc_range": data["arc_range"]
+        })
+        return results
+
+# --- 3. Core Estimator Logic ---
+
 class RobustEstimator:
     """
     A modular Kalman Filter with outlier rejection and reacquisition logic.
@@ -68,6 +131,7 @@ class RobustEstimator:
         reacq_frames: int = 5,
         reacq_r_scale: float = 10.0,
         init_threshold: float = 8.0,
+        init_confirm_frames: int = 5,
     ):
         self.dyn = dynamic_model
         self.meas = measurement_model
@@ -76,18 +140,21 @@ class RobustEstimator:
         self.reacq_frames = reacq_frames
         self.reacq_r_scale = reacq_r_scale
         self.init_threshold = init_threshold
+        self.init_confirm_frames = init_confirm_frames
 
         # Filter state
         self.x: Optional[np.ndarray] = None
         self.P: Optional[np.ndarray] = None
         self._last_t: Optional[float] = None
         self._reacq_countdown = 0
+        self._confirm_counter = 0  # Counter for consecutive valid frames before init
 
     def reset(self):
         self.x = None
         self.P = None
         self._last_t = None
         self._reacq_countdown = 0
+        self._confirm_counter = 0
 
     def _initialize(self, t: float, z: float):
         # State: [pos, vel]
@@ -100,15 +167,24 @@ class RobustEstimator:
     def step(self, t: float, z: Optional[float]) -> Tuple[float, float, bool, bool]:
         """
         Perform one prediction-update step.
-        Returns:
-            (pos_est, vel_est, used_update, rejected)
+        Returns: (pos_est, vel_est, used_update, rejected)
         """
         # 1. Initialization check
         if self.x is None:
-            if z is None or not np.isfinite(z) or z < self.init_threshold:
+            # Confirmation Logic: Wait for N consecutive frames above threshold
+            # This prevents initializing on a single noise spike (e.g., spatter).
+            is_valid = (z is not None) and np.isfinite(z) and (z >= self.init_threshold)
+            
+            if is_valid:
+                self._confirm_counter += 1
+            else:
+                self._confirm_counter = 0 # Reset if any frame is invalid
+                
+            if self._confirm_counter >= self.init_confirm_frames:
+                self._initialize(t, z)
+                return (self.x[0], self.x[1], True, False)
+            else:
                 return (np.nan, np.nan, False, False)
-            self._initialize(t, z)
-            return (self.x[0], self.x[1], True, False)
 
         # 2. Prediction
         dt = t - self._last_t
@@ -145,17 +221,26 @@ class RobustEstimator:
         K = (P_pred @ H.T) / S
         
         self.x = x_pred + (K.flatten() * innov)
-        self.P = (np.eye(len(self.x)) - K @ H) @ P_pred
+        
+        # ---- Numerical Stability: Joseph Form Update ----
+        # Traditionally: self.P = (I - K @ H) @ P_pred
+        # But (I - KH) can become non-positive-definite due to precision loss.
+        # Joseph Form: P = (I - KH)P(I - KH).T + KRK.T is much more robust.
+        I = np.eye(len(self.x))
+        IKH = I - K @ H
+        P_upd = IKH @ P_pred @ IKH.T + (K * R) @ K.T
+        
+        # Enforce symmetry (Prevents drifting due to floating point errors)
+        self.P = 0.5 * (P_upd + P_upd.T)
+        
         self._last_t = t
-
         return (self.x[0], self.x[1], True, False)
-
 
 def run_estimation(
     times: np.ndarray,
     measurements: np.ndarray,
     estimator: RobustEstimator
-) -> dict:
+) -> Dict[str, Any]:
     """ Utility to run estimator over a series of measurements. """
     n = len(times)
     est_pos = np.full(n, np.nan)
@@ -178,44 +263,7 @@ def run_estimation(
         "rejected": rejected
     }
 
-class SessionProcessor:
-    """Helper class to extract data from a SessionData and run estimation."""
-    def __init__(self, a: float, b: float):
-        self.a = a
-        self.b = b
-
-    def extract_series(self, session) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """ Extracts (times, peak_y, robot_times, arc_on) """
-        # PeakY series
-        series = session.ir_high.json_series
-        times = np.asarray(series.times, dtype=float)
-        peak_y = np.asarray(series.values.get("PeakY", []), dtype=float)
-        n = min(len(times), len(peak_y))
-        times, peak_y = times[:n], peak_y[:n]
-
-        # Robot Arc series
-        robot_times = np.asarray(session.robot.series.times, dtype=float)
-        arc_on = np.asarray(session.robot.arc_on, dtype=float)
-        
-        return times, peak_y, robot_times, arc_on
-
-    def process_session(self, session, estimator: RobustEstimator):
-        times, peak_y, robot_times, arc_on = self.extract_series(session)
-        
-        # Raw CTWD measurement: z = a * peak_y + b
-        z_raw = np.full_like(peak_y, np.nan)
-        mask = np.isfinite(peak_y)
-        z_raw[mask] = self.a * peak_y[mask] + self.b
-
-        results = run_estimation(times, z_raw, estimator)
-        results["z_raw"] = z_raw
-        results["times"] = times
-        results["robot_times"] = robot_times
-        results["arc_on"] = arc_on
-        results["session_id"] = session.path.name
-        results["arc_range"] = session.arc_on_range
-        
-        return results
+# --- 4. Visualization & Main ---
 
 def build_ctwd_fig(results: dict):
     fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
@@ -256,30 +304,29 @@ def build_ctwd_fig(results: dict):
     return fig
 
 def main():
-    # Example standalone execution
-    from loader.session import SessionData
-    
     db_root = Path("DB")
     
     # 1. Config
     a, b = 0.437, 1.571
+    
+    # 1. Component Setup
     dyn_model = ConstantVelocityModel(q_pos=1e-4, q_vel=1e-2)
     meas_model = PositionMeasurementModel(r_meas=1.2**2)
-    
     estimator = RobustEstimator(
-        dynamic_model=dyn_model,
-        measurement_model=meas_model,
-        gate_threshold=1.0,
-        reacq_frames=10,
-        reacq_r_scale=20.0,
-        init_threshold=10.0
+        dyn_model, 
+        meas_model, 
+        gate_threshold=1.0, 
+        reacq_frames=10, 
+        init_threshold=10.0,
+        init_confirm_frames=1  # Wait for 5 consecutive valid frames to start
     )
     
-    processor = SessionProcessor(a=a, b=b)
+    # 2. Data Infrastructure
+    loader = SessionDataLoader()
+    processor = EstimationProcessor(a=a, b=b)
 
-    # 2. Pick a session
-    sessions = list(db_root.rglob("*"))
-    session_paths = [p for p in sessions if p.is_dir() and re.match(r"^\d{6}_\d{6}$", p.name)]
+    # 3. Execution
+    session_paths = [p for p in db_root.rglob("*") if p.is_dir() and re.match(r"^\d{6}_\d{6}$", p.name)]
     if not session_paths:
         print("No sessions found.")
         return
@@ -288,10 +335,10 @@ def main():
     print(f"Processing: {target_path.name}")
     session = SessionData(target_path)
 
-    # 3. Run
-    results = processor.process_session(session, estimator)
+    # Decoupled Flow: Load -> Process -> Plot
+    raw_data = loader.load(session)
+    results = processor.process_data(raw_data, estimator)
 
-    # 4. Plot
     build_ctwd_fig(results)
     plt.show()
 
