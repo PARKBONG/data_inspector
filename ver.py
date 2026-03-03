@@ -272,7 +272,7 @@ def main():
 
     # set your calibrated mapping here
     a = 0.437  # [mm/pixel]  <-- REPLACE
-    b = 1.571   # [mm]        <-- REPLACE
+    b = 1.571   # [mm)        <-- REPLACE
 
     # Robust estimator hyperparameters (start here, then tune)
     estimator = RobustCTWDEstimator(
