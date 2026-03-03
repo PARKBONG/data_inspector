@@ -63,6 +63,30 @@ class PositionMeasurementModel:
     def get_R(self) -> float:
         return self.r_meas
 
+class AdaptiveMeasurementModel:
+    """
+    Measurement model that adjusts R based on a per-frame confidence score.
+    Higher confidence (towards 1.0) keeps R near base value.
+    Lower confidence (towards 0.0) inflates R to ignore the measurement.
+    """
+    def __init__(self, r_base: float = 1.0):
+        self.r_base = r_base
+        self.H = np.array([[1.0, 0.0]], dtype=float)
+        self.current_confidence = 1.0
+
+    def set_confidence(self, score: float):
+        self.current_confidence = np.clip(score, 1e-6, 1.0)
+
+    def observe(self, x: np.ndarray) -> float:
+        return float((self.H @ x).item())
+
+    def get_H(self, x: np.ndarray) -> np.ndarray:
+        return self.H
+
+    def get_R(self) -> float:
+        # Increase noise R when confidence is low
+        return self.r_base / self.current_confidence
+
 # --- 2. Data Infrastructure (Decoupled) ---
 
 class SessionDataLoader:
@@ -70,10 +94,25 @@ class SessionDataLoader:
     @staticmethod
     def load(session: SessionData) -> Dict[str, Any]:
         """ Extracts (times, peak_y, robot_times, arc_on) into a dictionary. """
+        # PeakY and other series
         series = session.ir_high.json_series
+        keys = list(series.values.keys())
+        # print(f"DEBUG: Found keys in Session: {keys[:10]}") # Debugging
+        
         times = np.asarray(series.times, dtype=float)
         peak_y = np.asarray(series.values.get("PeakY", []), dtype=float)
+        peak_x = np.asarray(series.values.get("PeakX", []), dtype=float)
+        area = np.asarray(series.values.get("Area", []), dtype=float) # Changed from ContourArea
+        
         n = min(len(times), len(peak_y))
+        
+        # If keys missing, fallback to empty arrays
+        if len(peak_x) == 0: peak_x = np.full(n, 320.0) # Assume center if missing
+        if len(area) == 0: area = np.full(n, 1000.0)    # Assume medium area if missing
+        
+        # Make sure same length
+        peak_x = peak_x[:n]
+        area = area[:n]
         
         # Robot Arc series
         robot_times = np.asarray(session.robot.series.times, dtype=float)
@@ -82,11 +121,36 @@ class SessionDataLoader:
         return {
             "times": times[:n],
             "peak_y": peak_y[:n],
+            "peak_x": peak_x,
+            "area": area,
             "robot_times": robot_times,
             "arc_on": arc_on,
             "session_id": session.path.name,
             "arc_range": session.arc_on_range
         }
+
+class CmtConfidenceScorer:
+    """Analyzes CMT arc phases to determine data reliability."""
+    def __init__(self, min_area: float = 200.0, max_area: float = 3000.0):
+        self.min_area = min_area
+        self.max_area = max_area
+
+    def calculate(self, area: float, peak_x: float, img_width: float = 72.0) -> float:
+        # Metric 1: Arc Size. 
+        # Use log scale for area since CMT area can vary by orders of magnitude.
+        if area <= 0: return 0.1
+        
+        log_area = np.log10(area)
+        log_min = np.log10(max(1.0, self.min_area))
+        log_max = np.log10(max(1.0, self.max_area))
+        
+        area_score = np.clip((log_area - log_min) / (log_max - log_min), 0.1, 1.0)
+        
+        # Metric 2: Horizontal stability. Off-center peaks are less reliable.
+        dist = abs(peak_x - img_width/2)
+        x_score = np.clip(1.0 - (dist / (img_width/2)), 0.3, 1.0)
+        
+        return float(area_score * x_score)
 
 class EstimationProcessor:
     """Responsibility: Convert raw sensor data to physical units and run estimation."""
@@ -94,22 +158,31 @@ class EstimationProcessor:
         self.a = a
         self.b = b
 
-    def process_data(self, data: Dict[str, Any], estimator: 'RobustEstimator') -> Dict[str, Any]:
+    def process_data(self, data: Dict[str, Any], estimator: 'RobustEstimator', scorer: Optional[CmtConfidenceScorer] = None) -> Dict[str, Any]:
         times = data["times"]
         peak_y = data["peak_y"]
+        peak_x = data["peak_x"]
+        area = data["area"]
         
         # 1. Physical Conversion (Calibration)
         z_raw = np.full_like(peak_y, np.nan)
         mask = np.isfinite(peak_y)
         z_raw[mask] = self.a * peak_y[mask] + self.b
 
-        # 2. Run Filter
-        results = run_estimation(times, z_raw, estimator)
+        # 2. Compute Confidence for each frame
+        conf_scores = np.ones_like(times)
+        if scorer is not None:
+            for i in range(len(times)):
+                conf_scores[i] = scorer.calculate(area[i], peak_x[i])
+
+        # 3. Run Filter
+        results = run_estimation(times, z_raw, estimator, conf_scores)
         
-        # 3. Combine results with metadata for plotting
+        # 4. Combine results
         results.update({
             "z_raw": z_raw,
             "times": times,
+            "conf_scores": conf_scores,
             "robot_times": data["robot_times"],
             "arc_on": data["arc_on"],
             "session_id": data["session_id"],
@@ -164,11 +237,15 @@ class RobustEstimator:
         self.P = np.diag([max(r_init, 1.0), 10.0])
         self._last_t = t
 
-    def step(self, t: float, z: Optional[float]) -> Tuple[float, float, bool, bool]:
+    def step(self, t: float, z: Optional[float], confidence: float = 1.0) -> Tuple[float, float, bool, bool]:
         """
         Perform one prediction-update step.
         Returns: (pos_est, vel_est, used_update, rejected)
         """
+        # Update adaptive model if supported
+        if hasattr(self.meas, 'set_confidence'):
+            self.meas.set_confidence(confidence)
+            
         # 1. Initialization check
         if self.x is None:
             # Confirmation Logic: Wait for N consecutive frames above threshold
@@ -239,10 +316,14 @@ class RobustEstimator:
 def run_estimation(
     times: np.ndarray,
     measurements: np.ndarray,
-    estimator: RobustEstimator
+    estimator: RobustEstimator,
+    conf_scores: Optional[np.ndarray] = None
 ) -> Dict[str, Any]:
     """ Utility to run estimator over a series of measurements. """
     n = len(times)
+    if conf_scores is None:
+        conf_scores = np.ones(n)
+
     est_pos = np.full(n, np.nan)
     est_vel = np.full(n, np.nan)
     used_update = np.zeros(n, dtype=bool)
@@ -250,7 +331,7 @@ def run_estimation(
 
     estimator.reset()
     for i in range(n):
-        p, v, used, rej = estimator.step(times[i], measurements[i])
+        p, v, used, rej = estimator.step(times[i], measurements[i], conf_scores[i])
         est_pos[i] = p
         est_vel[i] = v
         used_update[i] = used
@@ -286,7 +367,8 @@ def build_ctwd_fig(results: dict):
     # 3) Diagnostics
     axes[2].plot(results["times"], results["used_update"].astype(int), linewidth=1, label="Used Update")
     axes[2].plot(results["times"], results["rejected"].astype(int), linewidth=1, label="Rejected (Outlier)")
-    axes[2].set_ylabel("Flags")
+    axes[2].plot(results["times"], results["conf_scores"], linewidth=1, label="Confidence", color='gray', alpha=0.5)
+    axes[2].set_ylabel("Flags / Score")
     axes[2].set_xlabel("Time (s)")
     axes[2].set_yticks([0, 1])
     axes[2].grid(True, linestyle="--", alpha=0.6)
@@ -311,19 +393,24 @@ def main():
     
     # 1. Component Setup
     dyn_model = ConstantVelocityModel(q_pos=1e-4, q_vel=1e-2)
-    meas_model = PositionMeasurementModel(r_meas=1.2**2)
+    
+    # Use Adaptive Measurement Model with Dynamic R
+    meas_model = AdaptiveMeasurementModel(r_base=1.2**2)
+    
     estimator = RobustEstimator(
         dyn_model, 
         meas_model, 
         gate_threshold=1.0, 
         reacq_frames=10, 
         init_threshold=10.0,
-        init_confirm_frames=1  # Wait for 5 consecutive valid frames to start
+        init_confirm_frames=5
     )
     
     # 2. Data Infrastructure
     loader = SessionDataLoader()
     processor = EstimationProcessor(a=a, b=b)
+    # Adjusted based on sample data (Area was ~256)
+    scorer = CmtConfidenceScorer(min_area=50, max_area=1500)
 
     # 3. Execution
     session_paths = [p for p in db_root.rglob("*") if p.is_dir() and re.match(r"^\d{6}_\d{6}$", p.name)]
@@ -335,10 +422,11 @@ def main():
     print(f"Processing: {target_path.name}")
     session = SessionData(target_path)
 
-    # Decoupled Flow: Load -> Process -> Plot
+    # Decoupled Flow: Load -> Process (with Confidence Scorer) -> Plot
     raw_data = loader.load(session)
-    results = processor.process_data(raw_data, estimator)
+    results = processor.process_data(raw_data, estimator, scorer=scorer)
 
+    # 4. Plot
     build_ctwd_fig(results)
     plt.show()
 
