@@ -89,11 +89,13 @@ def build_layout(session_ids: List[str], default_session_id: str, default_sessio
                         ],
                         style={"flex": "1"},
                     ),
-                    # Right: Joints & Velocity
+                    # Right: Joints & Velocity (Separated)
                     html.Div(
                         [
-                            html.H4("Robot Joints & Velocity"),
-                            dcc.Graph(id="robot-joints-velocity", className="path-graph"),
+                            html.H4("Robot Joints"),
+                            dcc.Graph(id="robot-joints", style={"height": "300px"}),
+                            html.H4("Robot Velocity"),
+                            dcc.Graph(id="robot-velocity", style={"height": "300px"}),
                         ],
                         style={"flex": "1"},
                     ),
@@ -577,7 +579,8 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
     # Combined Media Update
     @app.callback(
         Output("path-3d-graph", "figure"),
-        Output("robot-joints-velocity", "figure"),
+        Output("robot-joints", "figure"),
+        Output("robot-velocity", "figure"),
         Output("audio-spectrogram", "figure"),
         Output("audio-energy", "figure"),
         Output("ir-high-graph", "figure"),
@@ -605,7 +608,8 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
             current_time,
             f"XYZ Path (t={current_time:.2f}s)",
         )
-        fig_joints = figures.build_robot_joint_velocity_plot(session.robot, current_time, active_range=range_value)
+        fig_joints = figures.build_robot_joints_plot(session.robot, current_time, active_range=range_value)
+        fig_vel = figures.build_robot_velocity_plot(session.robot, current_time, active_range=range_value)
 
         # 2. Audio Figs
         fig_spec = figures.build_spectrogram(session.audio, current_time, active_range=range_value)
@@ -633,7 +637,7 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
         peak_x_fig = figures.build_peak_x_plot(session.ir_high.json_series, current_time, active_range=range_value)
         peak_y_fig = figures.build_peak_y_plot(session.ir_high.json_series, current_time, active_range=range_value)
         
-        return fig_3d, fig_joints, fig_spec, fig_energy, ir_high, peak_x_fig, peak_y_fig, ir_low, rgb_src, rgb_style
+        return fig_3d, fig_joints, fig_vel, fig_spec, fig_energy, ir_high, peak_x_fig, peak_y_fig, ir_low, rgb_src, rgb_style
 
     # Synchronize time controls (slider and label range)
     @app.callback(
@@ -647,7 +651,8 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
         Input("session-selector", "value"),
         Input("timeline-graph", "clickData"),
         Input("path-3d-graph", "clickData"),
-        Input("robot-joints-velocity", "clickData"),
+        Input("robot-joints", "clickData"),
+        Input("robot-velocity", "clickData"),
         Input("audio-spectrogram", "clickData"),
         Input("audio-energy", "clickData"),
         Input("ir-high-peak-x", "clickData"),
@@ -660,6 +665,7 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
         timeline_click,
         path_click,
         joints_click,
+        velocity_click,
         audio_click,
         energy_click,
         peak_x_click,
@@ -678,7 +684,8 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
         trigger_map = {
             "timeline-graph.clickData": (timeline_click, "x"),
             "path-3d-graph.clickData": (path_click, "customdata"),
-            "robot-joints-velocity.clickData": (joints_click, "x"),
+            "robot-joints.clickData": (joints_click, "x"),
+            "robot-velocity.clickData": (velocity_click, "x"),
             "audio-spectrogram.clickData": (audio_click, "x"),
             "audio-energy.clickData": (energy_click, "x"),
             "ir-high-peak-x.clickData": (peak_x_click, "x"),

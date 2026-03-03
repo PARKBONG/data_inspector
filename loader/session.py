@@ -49,12 +49,25 @@ class RobotData:
             return np.zeros(len(path))
         
         # Central differencing for each coordinate using np.gradient
-        # This provides v_x = dx/dt, etc.
         vx = np.gradient(path[:, 0], times)
         vy = np.gradient(path[:, 1], times)
         vz = np.gradient(path[:, 2], times)
         
         return np.sqrt(vx**2 + vy**2 + vz**2)
+
+    @property
+    def velocity_xyz(self) -> Dict[str, np.ndarray]:
+        path = self.path_xyz
+        times = self.series.times
+        if len(path) < 2 or len(times) != len(path):
+            zeros = np.zeros(len(path))
+            return {"Vx": zeros, "Vy": zeros, "Vz": zeros}
+        
+        vx = np.gradient(path[:, 0], times)
+        vy = np.gradient(path[:, 1], times)
+        vz = np.gradient(path[:, 2], times)
+        
+        return {"Vx": vx, "Vy": vy, "Vz": vz}
 
 
 @dataclass

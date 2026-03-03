@@ -553,24 +553,57 @@ def build_peak_x_plot(series: JsonlSeries, current_time: float, active_range: Op
     return fig
 
 
-def build_robot_joint_velocity_plot(robot_data: RobotData, current_time: float, active_range: Optional[List[float]] = None):
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
+def build_robot_joints_plot(robot_data: RobotData, current_time: float, active_range: Optional[List[float]] = None):
+    fig = go.Figure()
     times = robot_data.series.times
     
-    # 1. Joint Values (Left Axis)
+    # Joint Values
     joints = robot_data.joints
     for name, values in joints.items():
         if len(values):
             fig.add_trace(
-                go.Scatter(x=times, y=values, name=name, mode="lines", opacity=0.8, customdata=times),
-                secondary_y=False
+                go.Scatter(x=times, y=values, name=name, mode="lines", opacity=0.8, customdata=times)
             )
             
-    # 2. Velocity (Right Axis)
-    vel = robot_data.velocity
-    if len(vel):
+    fig.add_vline(x=current_time, line=dict(color="red", dash="dash"))
+    _add_active_range(fig, active_range)
+    
+    fig.update_layout(
+        title="Robot Joints",
+        clickmode="event+select",
+        xaxis_title="Time (s)",
+        yaxis_title="Joint Angle (deg)",
+        height=300,
+        margin=dict(l=40, r=40, t=50, b=30),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        template="plotly_white",
+    )
+    return fig
+
+
+def build_robot_velocity_plot(robot_data: RobotData, current_time: float, active_range: Optional[List[float]] = None):
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    times = robot_data.series.times
+    
+    # Velocity Components
+    vel_xyz = robot_data.velocity_xyz
+    
+    # Left Axis: Vx, Vy (larger components)
+    if len(vel_xyz["Vx"]):
         fig.add_trace(
-            go.Scatter(x=times, y=vel, name="Velocity", mode="lines", line=dict(color="black", width=2), customdata=times),
+            go.Scatter(x=times, y=vel_xyz["Vx"], name="Vx", mode="lines", line=dict(width=1.5), customdata=times),
+            secondary_y=False
+        )
+    if len(vel_xyz["Vy"]):
+        fig.add_trace(
+            go.Scatter(x=times, y=vel_xyz["Vy"], name="Vy", mode="lines", line=dict(width=1.5), customdata=times),
+            secondary_y=False
+        )
+    
+    # Right Axis: Vz (smaller component)
+    if len(vel_xyz["Vz"]):
+        fig.add_trace(
+            go.Scatter(x=times, y=vel_xyz["Vz"], name="Vz (Z-axis)", mode="lines", line=dict(dash="dot", width=1.5), customdata=times),
             secondary_y=True
         )
     
@@ -578,16 +611,16 @@ def build_robot_joint_velocity_plot(robot_data: RobotData, current_time: float, 
     _add_active_range(fig, active_range)
     
     fig.update_layout(
-        title="Robot Joints & Velocity",
+        title="Robot Velocity (X, Y, Z)",
         clickmode="event+select",
         xaxis_title="Time (s)",
-        height=500,
+        height=300,
         margin=dict(l=40, r=40, t=50, b=30),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         template="plotly_white",
     )
-    fig.update_yaxes(title_text="Joint Angle (deg)", secondary_y=False)
-    fig.update_yaxes(title_text="Velocity (mm/s)", secondary_y=True)
+    fig.update_yaxes(title_text="XY Velocity (mm/s)", secondary_y=False)
+    fig.update_yaxes(title_text="Z Velocity (mm/s)", secondary_y=True)
     return fig
 
 
