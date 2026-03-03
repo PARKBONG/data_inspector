@@ -204,10 +204,10 @@ class IMMRobustCTWD:
         a: float,
         b: float,
         # dynamics
-        q0_ctwd: float = 1e-4,
-        q0_rate: float = 1e-2,
-        q1_ctwd: float = 5e-4,
-        q1_rate: float = 5e-2,
+        q0_ctwd: float = 1e-2,  # 뻣뻣함을 해결하기 위해 상향
+        q0_rate: float = 1e-1,
+        q1_ctwd: float = 1e-1,  # 점프 시 기동성 확보를 위해 대폭 상향
+        q1_rate: float = 5e-1,
         # measurement base noise (mm^2)
         r_base: float = 1.2**2,
         # mixture / mode
@@ -215,7 +215,7 @@ class IMMRobustCTWD:
         p_switch: float = 0.02,
         # adaptive measurement scaling
         reacq_frames: int = 10,
-        reacq_r_scale: float = 20.0,
+        reacq_r_scale: float = 1.0,  # 데이터 복귀 시 즉시 100% 신뢰
         # soft robust weighting
         robust_c_mm: float = 10.0,
         robust_power: float = 1.0,
@@ -250,6 +250,7 @@ class IMMRobustCTWD:
         self.init_ctwd_min_mm = float(init_ctwd_min_mm)
 
         self.valid = False
+        self._was_holding = False # 결측 후 복귀 감지용
 
     def reset(self):
         self.kf0.reset()
@@ -257,6 +258,7 @@ class IMMRobustCTWD:
         self.mu[:] = [0.8, 0.2]
         self._reacq_countdown = 0
         self.valid = False
+        self._was_holding = False
 
     @staticmethod
     def _gaussian_likelihood(r: float, S: float) -> float:
@@ -281,107 +283,63 @@ class IMMRobustCTWD:
         q_peak: float,
     ) -> Tuple[float, float, np.ndarray, bool]:
         """
-        Args:
-          t: time (s)
-          peak_v: PeakY (pixel) after time-consistency (or None)
-          arc_on: whether arc is on
-          q_peak: quality in [0,1] from peak tracker
-
-        Returns:
-          d_hat (mm), d_dot_hat (mm/s), mu (2,), used_update (bool)
+        Simplified Single-Model Robust Filter (IMM Disabled)
         """
         t = float(t)
         arc_on = bool(arc_on)
         q_peak = float(np.clip(q_peak, 0.0, 1.0))
 
-        # Predict always if initialized
+        # Predict if valid
         if self.valid:
+            x0_pre_pred = self.kf0.x.copy()
             self.kf0.predict(t)
-            self.kf1.predict(t)
 
-        # If arc is off -> no measurement update (safe for control)
+        # If arc is off or measurement missing -> Hold mode
         if (not arc_on) or (peak_v is None) or (not np.isfinite(peak_v)):
             self._reacq_countdown = self.reacq_frames
-            # Output mixed state if valid, else NaN
             if not self.valid:
-                return (np.nan, np.nan, self.mu.copy(), False)
-            x_mix = self.mu[0] * self.kf0.x + self.mu[1] * self.kf1.x
-            return (float(x_mix[0]), float(x_mix[1]), self.mu.copy(), False)
+                return (np.nan, np.nan, np.array([1.0, 0.0]), False)
+            
+            # [Hold 로직] 드리프트 차단을 위해 위치를 고정하고 속도를 0으로 설정
+            self.kf0.x = x0_pre_pred
+            self.kf0.x[1] = 0.0
+            self._was_holding = True # 결측 상태 기록
+            
+            return (float(self.kf0.x[0]), float(self.kf0.x[1]), np.array([1.0, 0.0]), False)
 
         # Measurement in mm
         z = self.a * float(peak_v) + self.b
 
-        # Initialize on first meaningful arc-on measurement
+        # [회복 메커니즘] 결측 후 첫 복귀 시, 과거 상태를 의심하고 현재 측정값을 세게 수용
+        if self._was_holding and self.valid:
+            # 공분산을 크게 키워 Kalman Gain을 최대화 (Snap-back 유도)
+            self.kf0.P = np.diag([25.0, 100.0])
+            self._was_holding = False
+
+        # Initialize
         if not self.valid:
             if z < self.init_ctwd_min_mm:
-                return (np.nan, np.nan, self.mu.copy(), False)
+                return (np.nan, np.nan, np.array([1.0, 0.0]), False)
             self.kf0.init(t, z, p_d=max(self.r_base, 4.0), p_ddot=25.0)
-            self.kf1.init(t, z, p_d=max(self.r_base, 9.0), p_ddot=49.0)
             self.valid = True
-            return (float(z), 0.0, self.mu.copy(), True)
+            return (float(z), 0.0, np.array([1.0, 0.0]), True)
 
-        # Base R adapted by peak quality (lower q -> larger R)
-        # Example: q=1 -> scale 1, q=0.2 -> scale 1/0.2^2=25
-        q_floor = 0.15
-        q_eff = max(q_floor, q_peak)
-        Rq = self.r_base / (q_eff ** 2)
-
-        # Reacquisition scaling after dropout/arc-off
+        # Adaptive R
+        Rq = self.r_base / (max(0.15, q_peak) ** 2)
         if self._reacq_countdown > 0:
             Rq *= self.reacq_r_scale
             self._reacq_countdown -= 1
 
-        # IMM mixing (prior)
-        mu_prev = self.mu.copy()
-        c0 = self.p00 * mu_prev[0] + self.p10 * mu_prev[1]
-        c1 = self.p01 * mu_prev[0] + self.p11 * mu_prev[1]
-        c0 = max(1e-12, c0)
-        c1 = max(1e-12, c1)
-        # Mixing probabilities
-        mu0_given0 = self.p00 * mu_prev[0] / c0
-        mu1_given0 = self.p10 * mu_prev[1] / c0
-        mu0_given1 = self.p01 * mu_prev[0] / c1
-        mu1_given1 = self.p11 * mu_prev[1] / c1
+        # Soft robust weighting
+        z_pred = float(self.kf0.x[0])
+        r_pred = z - z_pred
+        R_eff = self._soft_R(Rq, r_pred)
 
-        # Mixed initial conditions for each model (state only; covariance mixing omitted for simplicity)
-        x0_mix = mu0_given0 * self.kf0.x + mu1_given0 * self.kf1.x
-        x1_mix = mu0_given1 * self.kf0.x + mu1_given1 * self.kf1.x
+        # Single KF Update
+        innov, innov_var = self.kf0.update(z, R_eff)
 
-        # Set mixed states (covariance mixing can be added, but this already works well in practice)
-        self.kf0.x = x0_mix.copy()
-        self.kf1.x = x1_mix.copy()
-
-        # Model-specific measurement noise:
-        # - model0: normal (Rq)
-        # - model1: contaminated/jumpy (inflate R more)
-        R0 = float(Rq)
-        R1 = float(Rq * 100)
-
-        # Soft robust weighting: increase R based on each model's innovation magnitude
-        r0_pred = z - float(self.kf0.x[0])
-        r1_pred = z - float(self.kf1.x[0])
-        R0_eff = self._soft_R(R0, r0_pred)
-        R1_eff = self._soft_R(R1, r1_pred)
-
-        # Update both models
-        r0, S0 = self.kf0.update(z, R0_eff)
-        r1, S1 = self.kf1.update(z, R1_eff)
-
-        # Mode likelihoods
-        L0 = self._gaussian_likelihood(r0, S0)
-        L1 = self._gaussian_likelihood(r1, S1)
-
-        # Posterior mode probabilities
-        mu_post_unnorm = np.array([c0 * L0, c1 * L1], dtype=float)
-        s = float(mu_post_unnorm.sum())
-        if s < 1e-24:
-            self.mu[:] = [0.5, 0.5]
-        else:
-            self.mu = mu_post_unnorm / s
-
-        # Mixed output
-        x_mix = self.mu[0] * self.kf0.x + self.mu[1] * self.kf1.x
-        return (float(x_mix[0]), float(x_mix[1]), self.mu.copy(), True)
+        # diagnosic info: (innov, innov_var, R_eff)
+        return (float(self.kf0.x[0]), float(self.kf0.x[1]), np.array([innov, innov_var, R_eff]), True)
 
 
 def extract_peak_y_series(session: SessionData) -> Tuple[np.ndarray, np.ndarray]:
@@ -440,9 +398,9 @@ def run_ctwd_pipeline(
 
     ctwd_raw = np.full_like(times, np.nan, dtype=float)
     ctwd_est = np.full_like(times, np.nan, dtype=float)
-    q_arr = np.zeros_like(times, dtype=float)
-    mu0 = np.zeros_like(times, dtype=float)
-    mu1 = np.zeros_like(times, dtype=float)
+    ctwd_vel = np.zeros_like(times, dtype=float)
+    status_flag = np.zeros_like(times, dtype=float) # 1: Update, 0: Hold
+    innov_arr = np.zeros_like(times, dtype=float)
 
     peak_proc.reset()
     imm.reset()
@@ -451,65 +409,70 @@ def run_ctwd_pipeline(
         v = float(peak_y[i]) if np.isfinite(peak_y[i]) else None
         arc_on = bool(arc_on_ir[i])
 
-        # -- Previous implementation with fused peakY --
-        # v_fused, q = peak_proc.step(t, v, arc_on)
-        # q_arr[i] = q
-        # if v_fused is not None and np.isfinite(v_fused):
-        #     ctwd_raw[i] = a * v_fused + b
-        # d_hat, d_dot_hat, mu, used = imm.step(t, v_fused, arc_on, q)
+        # Raw PeakY sanity (treat very small values as missing)
+        fixed_v = v
+        if v is not None and v < 2.0: # peak height < 2px is likely noise
+            fixed_v = None
 
-        # -- Current implementation using raw peakY --
         q = 1.0
-        q_arr[i] = q
-        if v is not None:
-            ctwd_raw[i] = a * v + b
-        d_hat, d_dot_hat, mu, used = imm.step(t, v, arc_on, q)
+        if fixed_v is not None:
+            ctwd_raw[i] = a * fixed_v + b
+        
+        d_hat, d_dot_hat, diag, used = imm.step(t, fixed_v, arc_on, q)
         
         ctwd_est[i] = d_hat
-        mu0[i], mu1[i] = float(mu[0]), float(mu[1])
+        ctwd_vel[i] = d_dot_hat
+        status_flag[i] = 1.0 if used else 0.0
+        if used:
+            innov_arr[i] = diag[0] # innovation
 
-    return ctwd_raw, ctwd_est, q_arr, mu0, mu1, arc_on_ir.astype(float)
+    return ctwd_raw, ctwd_est, ctwd_vel, status_flag, innov_arr, arc_on_ir.astype(float)
 
 
 def build_fig(session: SessionData, a: float, b: float):
     times, peak_y = extract_peak_y_series(session)
     robot_times, arc_on = extract_robot_arc_series(session)
 
-    ctwd_raw, ctwd_est, q_peak, mu0, mu1, arc_on_ir = run_ctwd_pipeline(
+    ctwd_raw, ctwd_est, ctwd_vel, status, innov, arc_on_ir = run_ctwd_pipeline(
         times, peak_y, robot_times, arc_on, a, b
     )
 
     fig, axes = plt.subplots(5, 1, figsize=(12, 14), sharex=True)
 
-    axes[0].plot(times, peak_y, linewidth=1, label="PeakY raw")
-    axes[0].set_title(f"CTWD Robust Estimation (Arc-aware + Adaptive R + Soft + IMM): {session.path.name}")
+    # 1) PeakY & ArcOn
+    axes[0].plot(times, peak_y, linewidth=1, label="PeakY raw", alpha=0.5)
+    ax0_twin = axes[0].twinx()
+    ax0_twin.plot(times, arc_on_ir, 'r--', alpha=0.3, label="ArcOn")
+    axes[0].set_title(f"Diagnostic Plot: {session.path.name}")
     axes[0].set_ylabel("PeakY (px)")
     axes[0].grid(True, linestyle="--", alpha=0.6)
-    axes[0].legend()
 
-    axes[1].plot(times, arc_on_ir, drawstyle="steps-post", linewidth=1.5, label="ArcOn (IR time)")
-    axes[1].set_ylabel("Arc (0/1)")
-    axes[1].set_yticks([0, 1])
+    # 2) CTWD
+    axes[1].plot(times, ctwd_raw, '.', markersize=2, label="CTWD raw", alpha=0.5)
+    axes[1].plot(times, ctwd_est, 'k-', linewidth=2, label="CTWD Filtered")
+    axes[1].set_ylabel("CTWD (mm)")
     axes[1].grid(True, linestyle="--", alpha=0.6)
     axes[1].legend()
 
-    axes[2].plot(times, ctwd_raw, linewidth=1, alpha=0.7, label="CTWD raw (from fused PeakY)")
-    axes[2].plot(times, ctwd_est, linewidth=2, label="CTWD estimate (IMM robust)")
-    axes[2].set_ylabel("CTWD (mm)")
+    # 3) Velocity (Drift check)
+    axes[2].plot(times, ctwd_vel, 'g-', label="Estimated Velocity")
+    axes[2].axhline(0, color='black', linewidth=1)
+    axes[2].set_ylabel("Vel (mm/s)")
+    axes[2].set_ylim([-50, 50])
     axes[2].grid(True, linestyle="--", alpha=0.6)
     axes[2].legend()
 
-    axes[3].plot(times, q_peak, linewidth=1.5, label="Peak quality q(t)")
-    axes[3].set_ylabel("q (0..1)")
-    axes[3].set_yticks([0, 0.5, 1.0])
+    # 4) Innovation (Error check)
+    axes[3].plot(times, innov, 'm.', markersize=3, label="Innovation (z - z_pred)")
+    axes[3].set_ylabel("Innov (mm)")
     axes[3].grid(True, linestyle="--", alpha=0.6)
     axes[3].legend()
 
-    axes[4].plot(times, mu0, linewidth=1.5, label="Mode prob: normal")
-    axes[4].plot(times, mu1, linewidth=1.5, label="Mode prob: contaminated")
-    axes[4].set_ylabel("IMM prob")
+    # 5) Status & Quality
+    axes[4].fill_between(times, 0, status, color='cyan', alpha=0.2, label="Action: Update (vs Hold)")
+    axes[4].set_ylabel("Status (0=Hold, 1=Update)")
+    axes[4].set_yticks([0, 1])
     axes[4].set_xlabel("Time (s)")
-    axes[4].set_yticks([0, 0.5, 1.0])
     axes[4].grid(True, linestyle="--", alpha=0.6)
     axes[4].legend()
 
