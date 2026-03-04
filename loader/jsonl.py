@@ -31,44 +31,127 @@ class JsonlLoader(LoaderBase):
         super().__init__(path)
         self.time_field = time_field
 
-    def load(self, keys: Sequence[str]) -> JsonlSeries:
+    def load(self, keys: Sequence[str], start_time: float = None, end_time: float = None) -> JsonlSeries:
+        # 1. Check Cache
+        cache_dir = self.source.parent / ".cache"
+        cache_file = cache_dir / f"{self.source.name}.npz"
+        
+        # Simple heuristic: if any jsonl is newer than cache, reload
+        should_reload = True
+        if cache_file.exists():
+            cache_mtime = cache_file.stat().st_mtime
+            latest_src_mtime = 0
+            src_files = list(self.source.glob("*.jsonl")) if self.source.is_dir() else [self.source]
+            for s in src_files:
+                latest_src_mtime = max(latest_src_mtime, s.stat().st_mtime)
+            if latest_src_mtime < cache_mtime:
+                should_reload = False
+
+        if not should_reload:
+            try:
+                data = np.load(cache_file, allow_pickle=True)
+                times = data["_times"]
+                # Only extract requested keys that exist in cache
+                values = {k: data[k] for k in keys if k in data}
+                # Check if we got all keys. If not, maybe keys changed, reload.
+                if all(k in values for k in keys):
+                    return self._filter_series(JsonlSeries(times=times, values=values), start_time, end_time)
+            except Exception:
+                pass # Fallback to slow load
+
+        # 2. Slow Load
         if not self.source.exists():
             return JsonlSeries(times=np.array([]), values={k: np.array([]) for k in keys})
 
         sources = []
         if self.source.is_dir():
             sources = list(self.source.glob("*.jsonl"))
-            # Sort by name, assuming numerical filenames or chronological order
             sources.sort(key=lambda p: int(p.stem) if p.stem.isdigit() else p.stem)
         else:
             sources = [self.source]
 
         all_times: List[float] = []
-        all_values: Dict[str, List[float]] = {k: [] for k in keys}
+        # Load all possible keys for broad cache coverage
+        temp_values: Dict[str, List[Any]] = {}
 
         for src in sources:
             with src.open("r", encoding="utf-8") as handle:
                 for line in handle:
                     line = line.strip()
-                    if not line:
-                        continue
+                    if not line: continue
                     try:
                         payload = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    try:
-                        all_times.append(timestamp_to_seconds(str(payload[self.time_field])))
-                    except Exception:
-                        continue
+                    except json.JSONDecodeError: continue
+                    
+                    t = timestamp_to_seconds(str(payload.get(self.time_field, 0)))
+                    all_times.append(t)
+                    
+                    # Flatten or extract all keys found in the first valid payload or similar
+                    for k, v in payload.items():
+                        if k == self.time_field: continue
+                        # Track numeric or list data
+                        if isinstance(v, (int, float, list, bool)):
+                            if k not in temp_values: 
+                                temp_values[k] = [np.nan] * (len(all_times)-1)
+                            temp_values[k].append(v)
+                        elif isinstance(v, str):
+                            if k not in temp_values:
+                                temp_values[k] = [None] * (len(all_times)-1)
+                            temp_values[k].append(v)
 
-                    for key in keys:
-                        value = _extract_nested_value(payload, key)
-                        all_values[key].append(value)
+                    # Backfill missing keys for this line
+                    for k in temp_values:
+                        if len(temp_values[k]) < len(all_times):
+                            placeholder = np.nan if not isinstance(temp_values[k][0], str) else None
+                            temp_values[k].append(placeholder)
 
-        aligned = {}
-        for k, v in all_values.items():
+        # 3. Save Cache
+        if not cache_dir.exists(): cache_dir.mkdir(parents=True, exist_ok=True)
+        save_dict = {"_times": np.array(all_times)}
+        for k, v in temp_values.items():
+            # Try to force float conversion for numeric series
             try:
-                aligned[k] = np.array(v)
+                arr = np.array(v)
+                if arr.dtype == object:
+                    # Try to see if it's mostly numbers/NaNs
+                    save_dict[k] = arr.astype(float)
+                else:
+                    save_dict[k] = arr
             except Exception:
-                aligned[k] = np.array(v, dtype=object)
-        return JsonlSeries(times=np.array(all_times), values=aligned)
+                save_dict[k] = np.array(v, dtype=object)
+        
+        try:
+            np.savez(cache_file, **save_dict)
+        except Exception:
+            pass
+
+        # 4. Filter and Return
+        result_values = {}
+        for k in keys:
+            if k in save_dict:
+                result_values[k] = save_dict[k]
+            else:
+                # Fill missing requested key with NaNs
+                result_values[k] = np.full(len(all_times), np.nan)
+                
+        series = JsonlSeries(times=save_dict["_times"], values=result_values)
+        return self._filter_series(series, start_time, end_time)
+
+    def _filter_series(self, series: JsonlSeries, start: float, end: float) -> JsonlSeries:
+        if start is None and end is None:
+            return series
+        
+        times = series.times
+        if len(times) == 0:
+            return series
+            
+        mask = np.ones(len(times), dtype=bool)
+        if start is not None:
+            mask &= (times >= start)
+        if end is not None:
+            mask &= (times <= end)
+            
+        return JsonlSeries(
+            times=times[mask],
+            values={k: v[mask] for k, v in series.values.items()}
+        )

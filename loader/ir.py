@@ -81,7 +81,14 @@ class IRRawLoader(LoaderBase):
         self.timestamps = np.array(all_stamps)
         self.frame_count = len(self.timestamps)
 
-    def load(self):
+    def load(self, start_time: float = None, end_time: float = None):
+        if start_time is not None or end_time is not None:
+            mask = np.ones(len(self.timestamps), dtype=bool)
+            if start_time is not None: mask &= (self.timestamps >= start_time)
+            if end_time is not None: mask &= (self.timestamps <= end_time)
+            self.timestamps = self.timestamps[mask]
+            self.frame_count = len(self.timestamps)
+            # Note: mapping back to raw file offsets remains correct through timestamps filter
         return self
 
     def get_nearest_frame(self, timestamp: float) -> Optional[IRFrame]:

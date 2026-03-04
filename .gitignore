@@ -2,3 +2,6 @@ DB/
 
 # python
 *.pyc
+
+# cache
+.cache/

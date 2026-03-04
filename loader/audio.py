@@ -45,12 +45,41 @@ class AudioLoader(LoaderBase):
         self.spectrogram_window = spectrogram_window
         self.spectrogram_step = spectrogram_step
 
-    def load(self) -> AudioData:
+    def load(self, start_time: float = None, end_time: float = None) -> AudioData:
+        # 1. Check Cache
+        cache_dir = self.source.parent / ".cache"
+        cache_file = cache_dir / f"{self.source.name}.pkl"
+        
+        # Simple heuristic: if any wav is newer than cache, reload
+        should_reload = True
+        if cache_file.exists():
+            cache_mtime = cache_file.stat().st_mtime
+            latest_src_mtime = 0
+            src_files = list(self.source.glob("*.wav")) if self.source.is_dir() else [self.source]
+            for s in src_files:
+                latest_src_mtime = max(latest_src_mtime, s.stat().st_mtime)
+            if latest_src_mtime < cache_mtime:
+                should_reload = False
+
+        if not should_reload:
+            import pickle
+            try:
+                with open(cache_file, "rb") as f:
+                    cached_data = pickle.load(f)
+                return self._filter_audio(cached_data, start_time, end_time)
+            except Exception:
+                pass
+
+        # 2. Slow Load
         samples, sample_rate = self._read_wav()
         duration = len(samples) / sample_rate if sample_rate else 0.0
+        
+        # We process the whole thing for cache, but we could also trim BEFORE processing for speed
+        # However, cache usually stores the FULL processed data.
         rms = self._compute_rms(samples, sample_rate)
         spectrogram = self._compute_spectrogram(samples, sample_rate)
-        return AudioData(
+        
+        full_data = AudioData(
             sample_rate=sample_rate,
             samples=samples,
             rms=rms,
@@ -58,7 +87,60 @@ class AudioLoader(LoaderBase):
             duration=duration,
         )
 
+        # 3. Save Cache
+        if not cache_dir.exists(): cache_dir.mkdir(parents=True, exist_ok=True)
+        import pickle
+        try:
+            with open(cache_file, "wb") as f:
+                pickle.dump(full_data, f)
+        except Exception:
+            pass
+
+        return self._filter_audio(full_data, start_time, end_time)
+
+    def _filter_audio(self, data: AudioData, start: float, end: float) -> AudioData:
+        if start is None and end is None:
+            return data
+            
+        sr = data.sample_rate
+        if sr == 0: return data
+        
+        # Samples
+        t_start = max(0, start if start is not None else 0)
+        t_end = min(data.duration, end if end is not None else data.duration)
+        
+        idx_start = int(t_start * sr)
+        idx_end = int(t_end * sr)
+        new_samples = data.samples[idx_start:idx_end]
+        
+        # RMS
+        rms_mask = np.ones(len(data.rms.times), dtype=bool)
+        if start is not None: rms_mask &= (data.rms.times >= start)
+        if end is not None: rms_mask &= (data.rms.times <= end)
+        new_rms = AudioRms(times=data.rms.times[rms_mask], values=data.rms.values[rms_mask])
+        
+        # Spectrogram
+        spec_mask = np.ones(len(data.spectrogram.times), dtype=bool)
+        if start is not None: spec_mask &= (data.spectrogram.times >= start)
+        if end is not None: spec_mask &= (data.spectrogram.times <= end)
+        
+        new_spec = AudioSpectrogram(
+            times=data.spectrogram.times[spec_mask],
+            frequencies=data.spectrogram.frequencies,
+            magnitude=data.spectrogram.magnitude[:, spec_mask] if data.spectrogram.magnitude.size > 0 else data.spectrogram.magnitude
+        )
+        
+        return AudioData(
+            sample_rate=sr,
+            samples=new_samples,
+            rms=new_rms,
+            spectrogram=new_spec,
+            duration=t_end - t_start
+        )
+
     def _read_wav(self) -> Tuple[np.ndarray, int]:
+        # ... (implementation from previous turn)
+        # (I will keep the optimized version I just wrote)
         if not self.source.exists():
             return np.array([]), 0
 
@@ -73,8 +155,7 @@ class AudioLoader(LoaderBase):
         final_sample_rate = 0
 
         for src in sources:
-            if src.stat().st_size < 44:
-                continue
+            if src.stat().st_size < 44: continue
             try:
                 with wave.open(str(src), "rb") as wf:
                     n_channels = wf.getnchannels()
@@ -82,35 +163,28 @@ class AudioLoader(LoaderBase):
                     samp_width = wf.getsampwidth()
                     n_frames = wf.getnframes()
                     raw = wf.readframes(n_frames)
-            except wave.Error:
-                continue
+            except wave.Error: continue
 
             if samp_width == 3:
                 raw_array = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3)
-                padded = np.hstack(
-                    (raw_array, np.zeros((raw_array.shape[0], 1), dtype=np.uint8))
-                )
+                padded = np.hstack((raw_array, np.zeros((raw_array.shape[0], 1), dtype=np.uint8)))
                 data32 = padded.view(np.int32).flatten()
                 audio = data32.astype(np.float32)
             else:
                 dtype = {1: np.int8, 2: np.int16, 4: np.int32}.get(samp_width)
-                if dtype is None:
-                    continue
+                if dtype is None: continue
                 audio = np.frombuffer(raw, dtype=dtype).astype(np.float32)
 
-            if n_channels > 1:
-                audio = audio.reshape(-1, n_channels).mean(axis=1)
-
+            if n_channels > 1: audio = audio.reshape(-1, n_channels).mean(axis=1)
             if audio.size > 0:
                 all_samples.append(audio)
                 final_sample_rate = sample_rate
 
-        if not all_samples:
-            return np.array([]), 0
-
+        if not all_samples: return np.array([]), 0
         return np.concatenate(all_samples), final_sample_rate
 
     def _compute_rms(self, samples: np.ndarray, sample_rate: int) -> AudioRms:
+        # ... (same as before)
         if len(samples) == 0 or sample_rate == 0:
             return AudioRms(np.array([]), np.array([]))
 
@@ -121,17 +195,13 @@ class AudioLoader(LoaderBase):
         for idx in range(n_windows):
             start = idx * window_samples
             segment = samples[start : start + window_samples]
-            if len(segment) == 0:
-                break
+            if len(segment) == 0: break
             rms_values.append(np.sqrt(np.mean(np.square(segment))))
             times.append((start + len(segment) / 2) / sample_rate)
         return AudioRms(times=np.array(times), values=np.array(rms_values))
 
-    def _compute_spectrogram(
-        self,
-        samples: np.ndarray,
-        sample_rate: int,
-    ) -> AudioSpectrogram:
+    def _compute_spectrogram(self, samples: np.ndarray, sample_rate: int) -> AudioSpectrogram:
+        # ... (same as before)
         if len(samples) == 0 or sample_rate == 0:
             return AudioSpectrogram(np.array([]), np.array([]), np.array([[]]))
 
@@ -151,8 +221,4 @@ class AudioLoader(LoaderBase):
         magnitude = np.stack(segments, axis=1) if segments else np.array([[]])
         freqs = np.fft.rfftfreq(window_size, d=1.0 / sample_rate)
 
-        return AudioSpectrogram(
-            times=np.array(times),
-            frequencies=freqs,
-            magnitude=magnitude,
-        )
+        return AudioSpectrogram(times=np.array(times), frequencies=freqs, magnitude=magnitude)
