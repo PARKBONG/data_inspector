@@ -413,7 +413,7 @@ def main():
     scorer = CmtConfidenceScorer(min_area=50, max_area=1500)
 
     # 3. Execution
-    session_paths = [p for p in db_root.rglob("*") if p.is_dir() and re.match(r"^\d{6}_\d{6}$", p.name)]
+    session_paths = [p for p in db_root.rglob("*") if p.is_dir() and re.match(r"^\d{6}_\d{6}.*$", p.name)]
     if not session_paths:
         print("No sessions found.")
         return

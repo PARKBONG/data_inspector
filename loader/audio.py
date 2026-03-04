@@ -62,30 +62,53 @@ class AudioLoader(LoaderBase):
         if not self.source.exists():
             return np.array([]), 0
 
-        with wave.open(str(self.source), "rb") as wf:
-            n_channels = wf.getnchannels()
-            sample_rate = wf.getframerate()
-            samp_width = wf.getsampwidth()
-            n_frames = wf.getnframes()
-            raw = wf.readframes(n_frames)
-
-        if samp_width == 3:
-            raw_array = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3)
-            padded = np.hstack(
-                (raw_array, np.zeros((raw_array.shape[0], 1), dtype=np.uint8))
-            )
-            data32 = padded.view(np.int32).flatten()
-            audio = data32.astype(np.float32)
+        sources = []
+        if self.source.is_dir():
+            sources = list(self.source.glob("*.wav"))
+            sources.sort(key=lambda p: int(p.stem) if p.stem.isdigit() else p.stem)
         else:
-            dtype = {1: np.int8, 2: np.int16, 4: np.int32}.get(samp_width)
-            if dtype is None:
-                raise ValueError(f"Unsupported sample width: {samp_width}")
-            audio = np.frombuffer(raw, dtype=dtype).astype(np.float32)
+            sources = [self.source]
 
-        if n_channels > 1:
-            audio = audio.reshape(-1, n_channels).mean(axis=1)
+        all_samples = []
+        final_sample_rate = 0
 
-        return audio, sample_rate
+        for src in sources:
+            if src.stat().st_size < 44:
+                continue
+            try:
+                with wave.open(str(src), "rb") as wf:
+                    n_channels = wf.getnchannels()
+                    sample_rate = wf.getframerate()
+                    samp_width = wf.getsampwidth()
+                    n_frames = wf.getnframes()
+                    raw = wf.readframes(n_frames)
+            except wave.Error:
+                continue
+
+            if samp_width == 3:
+                raw_array = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3)
+                padded = np.hstack(
+                    (raw_array, np.zeros((raw_array.shape[0], 1), dtype=np.uint8))
+                )
+                data32 = padded.view(np.int32).flatten()
+                audio = data32.astype(np.float32)
+            else:
+                dtype = {1: np.int8, 2: np.int16, 4: np.int32}.get(samp_width)
+                if dtype is None:
+                    continue
+                audio = np.frombuffer(raw, dtype=dtype).astype(np.float32)
+
+            if n_channels > 1:
+                audio = audio.reshape(-1, n_channels).mean(axis=1)
+
+            if audio.size > 0:
+                all_samples.append(audio)
+                final_sample_rate = sample_rate
+
+        if not all_samples:
+            return np.array([]), 0
+
+        return np.concatenate(all_samples), final_sample_rate
 
     def _compute_rms(self, samples: np.ndarray, sample_rate: int) -> AudioRms:
         if len(samples) == 0 or sample_rate == 0:

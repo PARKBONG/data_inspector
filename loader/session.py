@@ -105,7 +105,7 @@ class SessionData:
     def __init__(self, session_path: Path):
         self.path = Path(session_path)
         self.robot = RobotData(
-            JsonlLoader(self.path / "Robot" / "0.jsonl").load(
+            JsonlLoader(self.path / "Robot").load(
                 [
                     "ArcOn", "Pose.X", "Pose.Y", "Pose.Z",
                     "Joints.A1", "Joints.A2", "Joints.A3",
@@ -114,20 +114,22 @@ class SessionData:
             )
         )
         self.model = ModelData(
-            JsonlLoader(self.path / "Model" / "0.jsonl").load(
+            JsonlLoader(self.path / "Model").load(
                 ["LaserOn", "X", "Y", "Z", "Layer"]
             )
         )
-        self.audio = AudioLoader(self.path / "Audio" / "0.wav").run()
+        self.audio = AudioLoader(self.path / "Audio").run()
         self.ir_high = IRData(
-            json_series=JsonlLoader(self.path / "IR_High" / "0.jsonl").load(
+            json_series=JsonlLoader(self.path / "IR_High").load(
                 ["MaxTemp", "PeakX", "PeakY", "Area", "ContourPoints"]
             ),
-            raw_reader=IRRawLoader(self.path / "IR_High" / "0.raw", (1100, 2000)),
+            raw_reader=IRRawLoader(self.path / "IR_High", (1100, 2000)),
         )
         self.ir_low = IRData(
-            json_series=JsonlSeries(times=np.array([]), values={}),
-            raw_reader=IRRawLoader(self.path / "IR_Low" / "0.raw", (100, 950)),
+            json_series=JsonlLoader(self.path / "IR_Low").load(
+                ["MaxTemp", "PeakX", "PeakY", "Area", "ContourPoints"]
+            ),
+            raw_reader=IRRawLoader(self.path / "IR_Low", (100, 950)),
         )
         self.rgb_sequence = RGBLoader(self.path / "Image")
         self.start_time = self._compute_start_time()

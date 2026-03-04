@@ -6,7 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from loader.session import SessionData
 
-SESSION_PATTERN = re.compile(r"^\d{6}_\d{6}$")
+SESSION_PATTERN = re.compile(r"^\d{6}_\d{6}.*$")
 
 
 def discover_sessions(db_root: Path) -> Dict[str, Path]:

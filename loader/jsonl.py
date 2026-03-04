@@ -35,31 +35,40 @@ class JsonlLoader(LoaderBase):
         if not self.source.exists():
             return JsonlSeries(times=np.array([]), values={k: np.array([]) for k in keys})
 
-        times: List[float] = []
-        values: Dict[str, List[float]] = {k: [] for k in keys}
+        sources = []
+        if self.source.is_dir():
+            sources = list(self.source.glob("*.jsonl"))
+            # Sort by name, assuming numerical filenames or chronological order
+            sources.sort(key=lambda p: int(p.stem) if p.stem.isdigit() else p.stem)
+        else:
+            sources = [self.source]
 
-        with self.source.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                try:
-                    times.append(timestamp_to_seconds(str(payload[self.time_field])))
-                except Exception:
-                    continue
+        all_times: List[float] = []
+        all_values: Dict[str, List[float]] = {k: [] for k in keys}
 
-                for key in keys:
-                    value = _extract_nested_value(payload, key)
-                    values[key].append(value)
+        for src in sources:
+            with src.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    try:
+                        all_times.append(timestamp_to_seconds(str(payload[self.time_field])))
+                    except Exception:
+                        continue
+
+                    for key in keys:
+                        value = _extract_nested_value(payload, key)
+                        all_values[key].append(value)
 
         aligned = {}
-        for k, v in values.items():
+        for k, v in all_values.items():
             try:
                 aligned[k] = np.array(v)
             except Exception:
                 aligned[k] = np.array(v, dtype=object)
-        return JsonlSeries(times=np.array(times), values=aligned)
+        return JsonlSeries(times=np.array(all_times), values=aligned)
