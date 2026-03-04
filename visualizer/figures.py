@@ -228,7 +228,7 @@ def build_combined_path_3d(
                     z=seg_path[:, 2],
                     mode="lines+markers",
                     line=dict(color=color, dash=dash, width=3),
-                    marker=dict(size=8, opacity=0.01), # Increased size and fixed opacity
+                    marker=dict(size=8, opacity=0.8),
                     hovertemplate="Robot t=%{customdata:.3f}s<extra></extra>", # Added <extra></extra> for cleaner hover
                     customdata=seg_times,
                     name="Robot (Arc On)" if active else "Robot (Arc Off)",
@@ -237,8 +237,7 @@ def build_combined_path_3d(
             )
 
     # 2. Plot Adjusted Model Path
-    # Model Z is added to the Robot Z at that time
-    if len(model_path) and model_path.shape[1] >= 3 and len(model_times) and len(robot_path):
+    if len(model_path) and model_path.shape[1] >= 3 and len(model_times) and len(robot_path) and robot_path.shape[1] >= 3:
         # Interpolate robot Z to model timestamps
         adj_model_path = model_path.copy()
         robot_z_at_model_times = np.interp(model_times, robot_times, robot_path[:, 2])
@@ -259,7 +258,7 @@ def build_combined_path_3d(
                     z=seg_path[:, 2],
                     mode="lines+markers",
                     line=dict(color=color, width=5),
-                    marker=dict(size=8, opacity=0.01),
+                    marker=dict(size=8, opacity=0.8),
                     hovertemplate="Model t=%{customdata:.3f}s<extra></extra>",
                     customdata=seg_times,
                     name="Model (Laser On)" if active else "Model (Laser Off)",
@@ -286,12 +285,13 @@ def build_combined_path_3d(
 
     fig.update_layout(
         title=title,
+        uirevision="constant", # Keep UI state (zoom/pan) constant unless explicitly reset
         scene=dict(
             xaxis_title="X",
             yaxis_title="Y",
             zaxis_title="Z",
             aspectmode="data",
-            camera=dict(eye=dict(x=0, y=0, z=2), up=dict(x=0, y=1, z=0)),
+            camera=dict(up=dict(x=0, y=1, z=0)),
             # Light theme for 3D
             bgcolor="white",
         ),
@@ -431,10 +431,9 @@ def build_ir(reader, timestamp, title, metadata=None, draw_contour=True, draw_pe
         data=go.Heatmap(
             z=frame,
             colorscale="Inferno",
-            zmin=vmin,
-            zmax=vmax,
+            # Removed fixed zmin/zmax to handle varying units (0.1K vs K)
             showscale=True,
-            colorbar=dict(title=dict(text="Temp (°C)", side="right")),
+            colorbar=dict(title=dict(text="Temp", side="right")),
             hoverinfo="z+x+y",
             name="IR Heatmap",
         )

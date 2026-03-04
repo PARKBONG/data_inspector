@@ -34,7 +34,7 @@ class JsonlLoader(LoaderBase):
     def load(self, keys: Sequence[str], start_time: float = None, end_time: float = None) -> JsonlSeries:
         # 1. Check Cache
         cache_dir = self.source.parent / ".cache"
-        cache_file = cache_dir / f"{self.source.name}.npz"
+        cache_file = cache_dir / f"{self.source.name}.v2.npz"
         
         # Simple heuristic: if any jsonl is newer than cache, reload
         should_reload = True
@@ -71,7 +71,6 @@ class JsonlLoader(LoaderBase):
             sources = [self.source]
 
         all_times: List[float] = []
-        # Load all possible keys for broad cache coverage
         temp_values: Dict[str, List[Any]] = {}
 
         for src in sources:
@@ -86,20 +85,21 @@ class JsonlLoader(LoaderBase):
                     t = timestamp_to_seconds(str(payload.get(self.time_field, 0)))
                     all_times.append(t)
                     
-                    # Flatten or extract all keys found in the first valid payload or similar
-                    for k, v in payload.items():
-                        if k == self.time_field: continue
-                        # Track numeric or list data
-                        if isinstance(v, (int, float, list, bool)):
-                            if k not in temp_values: 
-                                temp_values[k] = [np.nan] * (len(all_times)-1)
-                            temp_values[k].append(v)
-                        elif isinstance(v, str):
-                            if k not in temp_values:
-                                temp_values[k] = [None] * (len(all_times)-1)
-                            temp_values[k].append(v)
+                    # Extract specifically requested keys (handling nested paths)
+                    for k in keys:
+                        v = _extract_nested_value(payload, k)
+                        if k not in temp_values:
+                            # Initialize with NaNs or Nones if we just discovered this key
+                            # but we had previous lines without it.
+                            if v is not None and isinstance(v, str):
+                                temp_values[k] = [None] * (len(all_times) - 1)
+                            else:
+                                temp_values[k] = [np.nan] * (len(all_times) - 1)
+                        
+                        temp_values[k].append(v)
 
-                    # Backfill missing keys for this line
+                    # Backfill any key that might have been in temp_values but wasn't in keys
+                    # (though in this new logic, temp_values usually only contains 'keys')
                     for k in temp_values:
                         if len(temp_values[k]) < len(all_times):
                             placeholder = np.nan if not isinstance(temp_values[k][0], str) else None
