@@ -14,9 +14,19 @@ def discover_sessions(db_root: Path) -> Dict[str, Path]:
     if not db_root.exists():
         raise FileNotFoundError(f"DB root not found: {db_root}")
 
-    for path in db_root.rglob("*"):
-        if path.is_dir() and SESSION_PATTERN.fullmatch(path.name):
-            sessions[path.name] = path
+    # Optimized search: only look at directory names up to depth 2
+    # This avoids scanning every single frame/jsonl file which can be thousands.
+    top_level_items = list(db_root.iterdir())
+    for p1 in top_level_items:
+        if p1.is_dir():
+            if SESSION_PATTERN.fullmatch(p1.name):
+                sessions[p1.name] = p1
+            else:
+                # Check one level deeper (e.g., DB/YYMMDD/YYMMDD_HHMMSS)
+                for p2 in p1.iterdir():
+                    if p2.is_dir() and SESSION_PATTERN.fullmatch(p2.name):
+                        sessions[p2.name] = p2
+                        
     return dict(sorted(sessions.items()))
 
 

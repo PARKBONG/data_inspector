@@ -115,9 +115,10 @@ class SessionData:
     def __init__(self, session_path: Path):
         self.path = Path(session_path)
         
-        # 1. Load Robot first to determine ArcOn range
+        # 1. Load Robot first to determine ArcOn range (Initial window discovery)
+        initial_robot_loader = JsonlLoader(self.path / "Robot")
         self.robot = RobotData(
-            JsonlLoader(self.path / "Robot").load(
+            initial_robot_loader.load(
                 [
                     "ArcOn", "Pose.X", "Pose.Y", "Pose.Z",
                     "Joints.A1", "Joints.A2", "Joints.A3",
@@ -132,52 +133,74 @@ class SessionData:
             self.view_start = max(0.0, first_arc - 1.0)
             self.view_end = last_arc + 1.0
         else:
-            # Fallback if no arc: show everything
             self.view_start = None
             self.view_end = None
             
-        # 3. Reload Robot and others with trimming
-        if self.view_start is not None:
-            self.robot = RobotData(
-                JsonlLoader(self.path / "Robot").load(
-                    [
-                        "ArcOn", "Pose.X", "Pose.Y", "Pose.Z",
-                        "Joints.A1", "Joints.A2", "Joints.A3",
-                        "Joints.A4", "Joints.A5", "Joints.A6"
-                    ],
+        # 3. Parallel Loading of all other sensors
+        from concurrent.futures import ThreadPoolExecutor
+
+        def load_robot():
+            if self.view_start is not None:
+                return RobotData(
+                    initial_robot_loader.load(
+                        [
+                            "ArcOn", "Pose.X", "Pose.Y", "Pose.Z",
+                            "Joints.A1", "Joints.A2", "Joints.A3",
+                            "Joints.A4", "Joints.A5", "Joints.A6"
+                        ],
+                        start_time=self.view_start, end_time=self.view_end
+                    )
+                )
+            return self.robot
+
+        def load_model():
+            return ModelData(
+                JsonlLoader(self.path / "Model").load(
+                    ["LaserOn", "X", "Y", "Z", "Layer"],
                     start_time=self.view_start, end_time=self.view_end
                 )
             )
 
-        self.model = ModelData(
-            JsonlLoader(self.path / "Model").load(
-                ["LaserOn", "X", "Y", "Z", "Layer"],
+        def load_audio():
+            return AudioLoader(self.path / "Audio").load(
                 start_time=self.view_start, end_time=self.view_end
             )
-        )
-        # Note: AudioLoader.run() calls load()
-        self.audio = AudioLoader(self.path / "Audio").load(
-            start_time=self.view_start, end_time=self.view_end
-        )
-        
-        self.ir_high = IRData(
-            json_series=JsonlLoader(self.path / "IR_High").load(
-                ["MaxTemp", "PeakX", "PeakY", "Area", "ContourPoints"],
-                start_time=self.view_start, end_time=self.view_end
-            ),
-            raw_reader=IRRawLoader(self.path / "IR_High", (1100, 2000)).load(
-                start_time=self.view_start, end_time=self.view_end
-            ),
-        )
-        self.ir_low = IRData(
-            json_series=JsonlLoader(self.path / "IR_Low").load(
-                ["MaxTemp", "PeakX", "PeakY", "Area", "ContourPoints"],
-                start_time=self.view_start, end_time=self.view_end
-            ),
-            raw_reader=IRRawLoader(self.path / "IR_Low", (100, 950)).load(
-                start_time=self.view_start, end_time=self.view_end
-            ),
-        )
+
+        def load_ir_high():
+            return IRData(
+                json_series=JsonlLoader(self.path / "IR_High").load(
+                    ["MaxTemp", "PeakX", "PeakY", "Area", "ContourPoints"],
+                    start_time=self.view_start, end_time=self.view_end
+                ),
+                raw_reader=IRRawLoader(self.path / "IR_High", (1100, 2000)).load(
+                    start_time=self.view_start, end_time=self.view_end
+                ),
+            )
+
+        def load_ir_low():
+            return IRData(
+                json_series=JsonlLoader(self.path / "IR_Low").load(
+                    ["MaxTemp", "PeakX", "PeakY", "Area", "ContourPoints"],
+                    start_time=self.view_start, end_time=self.view_end
+                ),
+                raw_reader=IRRawLoader(self.path / "IR_Low", (100, 950)).load(
+                    start_time=self.view_start, end_time=self.view_end
+                ),
+            )
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            fut_robot = executor.submit(load_robot)
+            fut_model = executor.submit(load_model)
+            fut_audio = executor.submit(load_audio)
+            fut_ir_high = executor.submit(load_ir_high)
+            fut_ir_low = executor.submit(load_ir_low)
+
+            self.robot = fut_robot.result()
+            self.model = fut_model.result()
+            self.audio = fut_audio.result()
+            self.ir_high = fut_ir_high.result()
+            self.ir_low = fut_ir_low.result()
+
         self.rgb_sequence = RGBLoader(self.path / "Image")
         self.start_time = self._compute_start_time()
 

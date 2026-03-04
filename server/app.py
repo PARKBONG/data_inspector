@@ -312,18 +312,27 @@ def _extract_time_from_click(data: Dict[str, Any] | None, key: str) -> float | N
         return None
 
 
-def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str) -> Dash:
-    if not session_map:
-        raise ValueError("No sessions available for visualization.")
-    if default_session_id not in session_map:
-        default_session_id = next(iter(session_map))
-    session_ids = sorted(session_map.keys())
+def create_dash_app(
+    session_map: Dict[str, SessionData], 
+    session_paths: Dict[str, Path], 
+    default_session_id: str
+) -> Dash:
+    if not session_paths:
+        raise ValueError("No sessions found.")
+    
+    if default_session_id not in session_map and default_session_id in session_paths:
+        session_map[default_session_id] = SessionData(session_paths[default_session_id])
+    
     default_session = session_map[default_session_id]
+    session_ids = sorted(session_paths.keys())
 
     app = Dash(__name__)
     app.layout = build_layout(session_ids, default_session_id, default_session)
 
     def get_session(session_id: str) -> SessionData:
+        if session_id not in session_map and session_id in session_paths:
+            print(f"Loading session: {session_id}")
+            session_map[session_id] = SessionData(session_paths[session_id])
         return session_map.get(session_id, default_session)
 
     # Timeline
@@ -706,6 +715,8 @@ def create_dash_app(session_map: Dict[str, SessionData], default_session_id: str
 
 
 def run_server(session_paths: Dict[str, Path], default_session: str, host: str = "127.0.0.1", port: int = 8050, debug: bool = False):
-    session_map = {sid: SessionData(path) for sid, path in session_paths.items()}
-    app = create_dash_app(session_map, default_session)
+    # Only load default session at startup
+    session_map = {default_session: SessionData(session_paths[default_session])}
+    
+    app = create_dash_app(session_map, session_paths, default_session)
     app.run(host=host, port=port, debug=debug)
